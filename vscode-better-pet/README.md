@@ -1,38 +1,38 @@
 # Buddy Unleashed (vscode-better-pet)
 
-让 VS Code 聊天框里的 **Buddy 宠物** 出现在**代码区域**中 —— 使用**原版精灵图、原版动画、原版物理与交互**（即 Copilot 聊天里 `/vscode-pet` 那只，stable 配色）。
+Brings VS Code's **Buddy pet** from the chat box into the **code area** — using the **original sprites, animations, physics, and interactions** (the same `/vscode-pet` from Copilot chat, stable colorway).
 
-## 命令
+## Commands
 
-- **Buddy Unleashed: Install** — 使宠物能够在代码区域显示，成功后提示完全退出并重启 VS Code。
-- **Buddy Unleashed: Uninstall** — 一键还原。
-- **Buddy Unleashed: Toggle** — 开/关宠物，并记住开关状态；开启时 VS Code 启动后自动唤出。
-- **Buddy Unleashed: Diagnose** — 显示状态与诊断信息。
+- **Buddy Unleashed: Install** — makes the pet available in the code area, then prompts you to restart VS Code.
+- **Buddy Unleashed: Uninstall** — one-click rollback.
+- **Buddy Unleashed: Toggle** — show/hide the pet, with the state remembered; when enabled, the pet reappears automatically on startup.
+- **Buddy Unleashed: Diagnose** — show status and diagnostic information.
 
-## 宠物行为（与原版一致，不含键盘控制与成就系统）
+## Pet Behavior (same as the original, excluding keyboard control and achievements)
 
-- **待机动画**：原版 50 帧 idle 精灵，周期性眨眼，眼睛跟随鼠标。
-- **睡觉/醒来**：空闲 20 秒后入睡，交互后醒来。
-- **打字**：敲代码时宠物进入 typing 状态，停止敲击后回到待机。
-- **任务成功**：构建/测试任务以退出码 0 结束时，宠物鼓掌（clapping）。
-- **光标躲避**：文本光标（不是鼠标）靠近时，宠物跳着躲开；被逼到墙角则躲起来，光标走远后恢复。
-- **点击**：随机触发 buttonPress / love / cool / sing / speechless / worry / yapping 等原版表情，小概率触发稀有旋转（complete）。
-- **拖拽 + 抛掷**：按住拖走，松手时按速度进入抛射（重力、撞墙反弹、旋转、落地 squish）；无速度则自由落体。
-- **鼠标弹跳**：宠物下落时用鼠标接住会弹起并累计连击；达到 20 次落地时触发原版彩带庆祝。
-- **连续快速转向**会眩晕（dizzy）。
-- **换装**：右键可给 Buddy 戴上 17 种帽子/配饰。
-- **换色**：右键可切换 Stable / Insiders / 8 种自定义配色。
-- **调整大小**：右键可 Grow / Shrink / Reset Size。
-- **Go on the Run**：右键让宠物躲起来，再点宠物唤回。
+- **Idle animation**: the original 50-frame idle sprite, periodic blinking, gaze follows the mouse.
+- **Sleep/wake**: falls asleep after 20 idle seconds and wakes on interaction.
+- **Typing**: enters a typing state while you code, returning to idle after you stop.
+- **Task success**: claps when a build/test task finishes with exit code 0.
+- **Cursor avoidance**: hops away from the text cursor (not the mouse); hides in a corner when trapped and recovers once the cursor moves away.
+- **Clicks**: randomly trigger buttonPress / love / cool / sing / speechless / worry / yapping, with a rare spin (complete).
+- **Drag & throw**: drag it around; release with speed to throw it (gravity, wall bounces, rotation, landing squish); otherwise it free-falls.
+- **Mouse bounce**: catch it mid-air to bounce it and build a combo; at 20 bounces it celebrates with the original confetti burst.
+- **Rapid direction changes** cause dizziness.
+- **Accessories**: right-click to equip one of 17 hats/accessories.
+- **Colors**: right-click to switch between Stable / Insiders / 8 custom colors.
+- **Resize**: right-click to Grow / Shrink / Reset Size.
+- **Go on the Run**: right-click to hide the pet; click it again to bring it back.
 
-右键菜单走 VS Code 的**原生上下文菜单**（macOS 上是系统原生菜单），与内置聊天宠物一致。开关状态、位置、大小、颜色与配饰会持久保存。
+The right-click menu uses VS Code's **native context menu** (the native system menu on macOS), just like the built-in chat pet. Toggle state, position, size, color, and accessories are all persisted.
 
-## 设置
+## Settings
 
-- `betterPet.appRoot`：VS Code `Resources/app` 目录的绝对路径，留空则自动检测。macOS 默认示例：`/Applications/Visual Studio Code.app/Contents/Resources/app`。
+- `betterPet.appRoot`: absolute path to VS Code's `Resources/app` directory; leave empty to auto-detect. macOS default example: `/Applications/Visual Studio Code.app/Contents/Resources/app`.
 
-## ⚠️ 注意事项
+## ⚠️ Notes
 
-- 仅保证匹配 **VS Code 1.141.0** 官方构建，版本不符时 Install 会拒绝执行。
-- VS Code 自动更新后需重新运行 Install。
-- 每一步都带备份与回滚，失败会自动还原。
+- Only the official **VS Code 1.141.0** build is guaranteed; Install refuses to run on other versions.
+- Re-run Install after VS Code auto-updates.
+- Every step is backed up with rollback; failures revert automatically.
