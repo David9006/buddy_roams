@@ -3,10 +3,10 @@
   "displayName": "Buddy Unleashed",
   "description": "Brings a roaming pet into the editor area using the patched `window.createEditorOverlay` API.",
   "version": "1.0.0",
-  "publisher": "local",
+  "publisher": "Gapple",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
-    "vscode": "^1.100.0"
+    "vscode": "==1.141.0"
   },
   "categories": [
     "Other"

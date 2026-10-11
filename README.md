@@ -31,7 +31,7 @@ Buddy Unleashed lets VS Code's Buddy pet (originally confined to the `/vscode-pe
 
 - `betterPet.appRoot`: absolute path to VS Code's `Resources/app` directory; leave empty to auto-detect. macOS default example: `/Applications/Visual Studio Code.app/Contents/Resources/app`.
 
-## ⚠️ Notes
+## Notes
 
 - Only the official **VS Code 1.141.0** build is guaranteed; Install refuses to run on other versions.
 - Re-run Install after VS Code auto-updates.
