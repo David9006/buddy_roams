@@ -1,0 +1,348 @@
+diff --git a/src/vs/workbench/api/browser/extensionHost.contribution.ts b/src/vs/workbench/api/browser/extensionHost.contribution.ts
+index 72e7f30..ca6c4af 100644
+--- a/src/vs/workbench/api/browser/extensionHost.contribution.ts
++++ b/src/vs/workbench/api/browser/extensionHost.contribution.ts
+@@ -72,6 +72,7 @@ import './mainThreadDownloadService.js';
+ import './mainThreadUrls.js';
+ import './mainThreadUriOpeners.js';
+ import './mainThreadWindow.js';
++import './mainThreadEditorOverlay.js';
+ import './mainThreadPower.js';
+ import './mainThreadWebviewManager.js';
+ import './mainThreadWorkspace.js';
+diff --git a/src/vs/workbench/api/browser/mainThreadEditorOverlay.ts b/src/vs/workbench/api/browser/mainThreadEditorOverlay.ts
+new file mode 100644
+index 0000000..e67bb08
+--- /dev/null
++++ b/src/vs/workbench/api/browser/mainThreadEditorOverlay.ts
+@@ -0,0 +1,129 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Microsoft Corporation. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++import { getActiveWindow } from '../../../base/browser/dom.js';
++import { Disposable, DisposableMap, IDisposable } from '../../../base/common/lifecycle.js';
++import { IOverlayWebview, IWebviewService } from '../../contrib/webview/browser/webview.js';
++import { extHostNamedCustomer, IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
++import { IWorkbenchLayoutService, Parts } from '../../services/layout/browser/layoutService.js';
++import { MainContext, MainThreadEditorOverlayShape } from '../common/extHost.protocol.js';
++
++interface IOverlayEntry extends IDisposable {
++	readonly webview: IOverlayWebview;
++}
++
++@extHostNamedCustomer(MainContext.MainThreadEditorOverlay)
++export class MainThreadEditorOverlay extends Disposable implements MainThreadEditorOverlayShape {
++
++	private readonly _overlays = this._register(new DisposableMap<string, IOverlayEntry>());
++	private _anchorElement: HTMLElement | undefined;
++
++	constructor(
++		extHostContext: IExtHostContext,
++		@IWebviewService private readonly _webviewService: IWebviewService,
++		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
++	) {
++		super();
++
++		this._register(this._layoutService.onDidLayoutContainer(() => this.updateAnchor()));
++		this._register(this._layoutService.onDidChangeActiveContainer(() => this.updateAnchor()));
++	}
++
++	$create(id: string, suppressEvents: boolean): Promise<void> {
++		if (this._overlays.has(id)) {
++			throw new Error(`Editor overlay '${id}' already exists`);
++		}
++
++		const webview = this._webviewService.createWebviewOverlay({
++			providedViewType: 'editor-overlay',
++			title: 'Editor Overlay',
++			options: {},
++			contentOptions: {
++				allowScripts: true,
++				allowForms: false,
++			},
++			extension: undefined,
++		});
++
++		webview.claim(this, getActiveWindow(), undefined);
++		webview.setAnchorElement(this.getOrCreateAnchorElement());
++
++		if (suppressEvents) {
++			webview.container.style.pointerEvents = 'none';
++		}
++
++		const entry: IOverlayEntry = {
++			webview,
++			dispose: () => {
++				try {
++					webview.release(this);
++				} finally {
++					webview.dispose();
++				}
++			},
++		};
++
++		this._overlays.set(id, entry);
++		return Promise.resolve();
++	}
++
++	$setHtml(id: string, html: string): Promise<void> {
++		this.tryGetWebview(id)?.setHtml(html);
++		return Promise.resolve();
++	}
++
++	$show(id: string): Promise<void> {
++		const webview = this.tryGetWebview(id);
++		if (webview) {
++			webview.claim(this, getActiveWindow(), undefined);
++			webview.container.style.display = '';
++		}
++		return Promise.resolve();
++	}
++
++	$hide(id: string): Promise<void> {
++		const webview = this.tryGetWebview(id);
++		if (webview) {
++			webview.container.style.display = 'none';
++		}
++		return Promise.resolve();
++	}
++
++	$dispose(id: string): Promise<void> {
++		this._overlays.deleteAndDispose(id);
++		return Promise.resolve();
++	}
++
++	private tryGetWebview(id: string): IOverlayWebview | undefined {
++		return this._overlays.get(id)?.webview;
++	}
++
++	private getOrCreateAnchorElement(): HTMLElement {
++		if (!this._anchorElement) {
++			const anchor = document.createElement('div');
++			anchor.className = 'monaco-editor-overlay-anchor';
++			anchor.style.position = 'fixed';
++			anchor.style.pointerEvents = 'none';
++			document.body.appendChild(anchor);
++			this._anchorElement = anchor;
++
++			this.updateAnchor();
++		}
++		return this._anchorElement;
++	}
++
++	private updateAnchor(): void {
++		const container = this._layoutService.getContainer(getActiveWindow(), Parts.EDITOR_PART);
++		if (!container || !this._anchorElement) {
++			return;
++		}
++
++		const rect = container.getBoundingClientRect();
++		this._anchorElement.style.left = `${rect.left}px`;
++		this._anchorElement.style.top = `${rect.top}px`;
++		this._anchorElement.style.width = `${rect.width}px`;
++		this._anchorElement.style.height = `${rect.height}px`;
++	}
++}
+diff --git a/src/vs/workbench/api/common/extHost.api.impl.ts b/src/vs/workbench/api/common/extHost.api.impl.ts
+index 743c188..eb0c957 100644
+--- a/src/vs/workbench/api/common/extHost.api.impl.ts
++++ b/src/vs/workbench/api/common/extHost.api.impl.ts
+@@ -120,6 +120,7 @@ import { ExtHostWebviews } from './extHostWebview.js';
+ import { ExtHostWebviewPanels } from './extHostWebviewPanels.js';
+ import { ExtHostWebviewViews } from './extHostWebviewView.js';
+ import { IExtHostWindow } from './extHostWindow.js';
++import { IExtHostEditorOverlay } from './extHostEditorOverlay.js';
+ import { IExtHostPower } from './extHostPower.js';
+ import { IExtHostWorkspace } from './extHostWorkspace.js';
+ import { ExtHostChatContext } from './extHostChatContext.js';
+@@ -166,6 +167,7 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
+ 	const extHostTunnelService = accessor.get(IExtHostTunnelService);
+ 	const extHostApiDeprecation = accessor.get(IExtHostApiDeprecationService);
+ 	const extHostWindow = accessor.get(IExtHostWindow);
++	const extHostEditorOverlay = accessor.get(IExtHostEditorOverlay);
+ 	const extHostPower = accessor.get(IExtHostPower);
+ 	const extHostUrls = accessor.get(IExtHostUrlsService);
+ 	const extHostSecretState = accessor.get(IExtHostSecretState);
+@@ -964,6 +966,9 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
+ 			createWebviewPanel(viewType: string, title: string, showOptions: vscode.ViewColumn | { viewColumn: vscode.ViewColumn; preserveFocus?: boolean }, options?: vscode.WebviewPanelOptions & vscode.WebviewOptions): vscode.WebviewPanel {
+ 				return extHostWebviewPanels.createWebviewPanel(extension, viewType, title, showOptions, options);
+ 			},
++			createEditorOverlay(options?: vscode.EditorOverlayOptions): vscode.EditorOverlay {
++				return extHostEditorOverlay.createEditorOverlay(options);
++			},
+ 			createWebviewTextEditorInset(editor: vscode.TextEditor, line: number, height: number, options?: vscode.WebviewOptions): vscode.WebviewEditorInset {
+ 				checkProposedApiEnabled(extension, 'editorInsets');
+ 				return extHostEditorInsets.createWebviewEditorInset(editor, line, height, options, extension);
+diff --git a/src/vs/workbench/api/common/extHost.common.services.ts b/src/vs/workbench/api/common/extHost.common.services.ts
+index 80c78b9..0732b84 100644
+--- a/src/vs/workbench/api/common/extHost.common.services.ts
++++ b/src/vs/workbench/api/common/extHost.common.services.ts
+@@ -18,6 +18,7 @@ import { IExtHostStorage, ExtHostStorage } from './extHostStorage.js';
+ import { IExtHostTunnelService, ExtHostTunnelService } from './extHostTunnelService.js';
+ import { IExtHostApiDeprecationService, ExtHostApiDeprecationService, } from './extHostApiDeprecationService.js';
+ import { IExtHostWindow, ExtHostWindow } from './extHostWindow.js';
++import { IExtHostEditorOverlay, ExtHostEditorOverlay } from './extHostEditorOverlay.js';
+ import { IExtHostPower, ExtHostPower } from './extHostPower.js';
+ import { IExtHostConsumerFileSystem, ExtHostConsumerFileSystem } from './extHostFileSystemConsumer.js';
+ import { IExtHostFileSystemInfo, ExtHostFileSystemInfo } from './extHostFileSystemInfo.js';
+@@ -62,6 +63,7 @@ registerSingleton(IExtHostTerminalService, WorkerExtHostTerminalService, Instant
+ registerSingleton(IExtHostTerminalShellIntegration, ExtHostTerminalShellIntegration, InstantiationType.Eager);
+ registerSingleton(IExtHostTunnelService, ExtHostTunnelService, InstantiationType.Eager);
+ registerSingleton(IExtHostWindow, ExtHostWindow, InstantiationType.Eager);
++registerSingleton(IExtHostEditorOverlay, ExtHostEditorOverlay, InstantiationType.Eager);
+ registerSingleton(IExtHostPower, ExtHostPower, InstantiationType.Eager);
+ registerSingleton(IExtHostUrlsService, ExtHostUrls, InstantiationType.Eager);
+ registerSingleton(IExtHostWorkspace, ExtHostWorkspace, InstantiationType.Eager);
+diff --git a/src/vs/workbench/api/common/extHost.protocol.ts b/src/vs/workbench/api/common/extHost.protocol.ts
+index 87b0661..538985d 100644
+--- a/src/vs/workbench/api/common/extHost.protocol.ts
++++ b/src/vs/workbench/api/common/extHost.protocol.ts
+@@ -2310,6 +2310,14 @@ export interface MainThreadWindowShape extends IDisposable {
+ 	$asExternalUri(uri: UriComponents, options: IOpenUriOptions): Promise<UriComponents>;
+ }
+ 
++export interface MainThreadEditorOverlayShape extends IDisposable {
++	$create(id: string, suppressEvents: boolean): Promise<void>;
++	$setHtml(id: string, html: string): Promise<void>;
++	$show(id: string): Promise<void>;
++	$hide(id: string): Promise<void>;
++	$dispose(id: string): Promise<void>;
++}
++
+ export enum CandidatePortSource {
+ 	None = 0,
+ 	Process = 1,
+@@ -4113,6 +4121,7 @@ export const MainContext = {
+ 	MainThreadShare: createProxyIdentifier<MainThreadShareShape>('MainThreadShare'),
+ 	MainThreadTask: createProxyIdentifier<MainThreadTaskShape>('MainThreadTask'),
+ 	MainThreadWindow: createProxyIdentifier<MainThreadWindowShape>('MainThreadWindow'),
++	MainThreadEditorOverlay: createProxyIdentifier<MainThreadEditorOverlayShape>('MainThreadEditorOverlay'),
+ 	MainThreadPower: createProxyIdentifier<MainThreadPowerShape>('MainThreadPower'),
+ 	MainThreadLabelService: createProxyIdentifier<MainThreadLabelServiceShape>('MainThreadLabelService'),
+ 	MainThreadNotebook: createProxyIdentifier<MainThreadNotebookShape>('MainThreadNotebook'),
+diff --git a/src/vs/workbench/api/common/extHostEditorOverlay.ts b/src/vs/workbench/api/common/extHostEditorOverlay.ts
+new file mode 100644
+index 0000000..e83a6e4
+--- /dev/null
++++ b/src/vs/workbench/api/common/extHostEditorOverlay.ts
+@@ -0,0 +1,44 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Microsoft Corporation. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++import type * as vscode from 'vscode';
++import { createDecorator } from '../../../platform/instantiation/common/instantiation.js';
++import { MainContext, MainThreadEditorOverlayShape } from './extHost.protocol.js';
++import { IExtHostRpcService } from './extHostRpcService.js';
++
++export interface IExtHostEditorOverlay extends ExtHostEditorOverlay { }
++
++export class ExtHostEditorOverlay {
++
++	declare _serviceBrand: undefined;
++
++	private static _idPool = 0;
++
++	private readonly _proxy: MainThreadEditorOverlayShape;
++
++	constructor(
++		@IExtHostRpcService extHostRpc: IExtHostRpcService,
++	) {
++		this._proxy = extHostRpc.getProxy(MainContext.MainThreadEditorOverlay);
++	}
++
++	createEditorOverlay(options: vscode.EditorOverlayOptions = {}): vscode.EditorOverlay {
++		const id = `editor-overlay:${++ExtHostEditorOverlay._idPool}`;
++		const proxy = this._proxy;
++		const suppressEvents = options.suppressEvents !== false;
++
++		void proxy.$create(id, suppressEvents);
++
++		return {
++			id,
++			setHtml: (html: string) => proxy.$setHtml(id, html),
++			show: () => proxy.$show(id),
++			hide: () => proxy.$hide(id),
++			dispose: () => proxy.$dispose(id),
++		};
++	}
++}
++
++export const IExtHostEditorOverlay = createDecorator<IExtHostEditorOverlay>('IExtHostEditorOverlay');
+diff --git a/src/vscode-dts/vscode.d.ts b/src/vscode-dts/vscode.d.ts
+index 60447c2..adfa3a5 100644
+--- a/src/vscode-dts/vscode.d.ts
++++ b/src/vscode-dts/vscode.d.ts
+@@ -11069,6 +11069,53 @@ declare module 'vscode' {
+ 	 * and active editors, as well as, UI elements to show messages, selections, and
+ 	 * asking for user input.
+ 	 */
++	/**
++	 * An overlay that renders HTML on top of the editor area. Unlike a
++	 * {@link WebviewPanel}, an overlay floats above the editors, does not take
++	 * part in the editor group layout and, by default, does not intercept mouse
++	 * events.
++	 */
++	export interface EditorOverlay {
++
++		/**
++		 * The unique identifier of this overlay.
++		 */
++		readonly id: string;
++
++		/**
++		 * Sets the HTML content of the overlay. The content is rendered inside a
++		 * sandboxed, script-enabled frame that covers the editor area.
++		 */
++		setHtml(html: string): Thenable<void>;
++
++		/**
++		 * Makes the overlay visible.
++		 */
++		show(): void;
++
++		/**
++		 * Hides the overlay without disposing it.
++		 */
++		hide(): void;
++
++		/**
++		 * Destroys the overlay and releases its resources.
++		 */
++		dispose(): void;
++	}
++
++	/**
++	 * Options for creating an {@link EditorOverlay}.
++	 */
++	export interface EditorOverlayOptions {
++
++		/**
++		 * When `true` (the default) the overlay ignores all pointer events so the
++		 * editor below remains fully interactive.
++		 */
++		readonly suppressEvents?: boolean;
++	}
++
+ 	export namespace window {
+ 
+ 		/**
+@@ -11555,6 +11602,15 @@ declare module 'vscode' {
+ 			readonly preserveFocus?: boolean;
+ 		}, options?: WebviewPanelOptions & WebviewOptions): WebviewPanel;
+ 
++		/**
++		 * Creates an overlay that renders HTML above the editor area, for example
++		 * to draw a companion pet that roams freely over the code.
++		 *
++		 * @param options Overlay options.
++		 * @returns A new {@link EditorOverlay}.
++		 */
++		export function createEditorOverlay(options?: EditorOverlayOptions): EditorOverlay;
++
+ 		/**
+ 		 * Set a message to the status bar. This is a short hand for the more powerful
+ 		 * status bar {@link window.createStatusBarItem items}.

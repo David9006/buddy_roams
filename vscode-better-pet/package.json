@@ -1,0 +1,74 @@
+{
+  "name": "vscode-better-pet",
+  "displayName": "Buddy Unleashed",
+  "description": "Brings a roaming pet into the editor area using the patched `window.createEditorOverlay` API.",
+  "version": "1.0.0",
+  "publisher": "local",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:vscode-better-pet.toggle",
+    "onCommand:vscode-better-pet.install",
+    "onCommand:vscode-better-pet.uninstall",
+    "onCommand:vscode-better-pet.diagnose"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vscode-better-pet.toggle",
+        "title": "Toggle",
+        "category": "Buddy Unleashed"
+      },
+      {
+        "command": "vscode-better-pet.install",
+        "title": "Install",
+        "category": "Buddy Unleashed"
+      },
+      {
+        "command": "vscode-better-pet.uninstall",
+        "title": "Uninstall",
+        "category": "Buddy Unleashed"
+      },
+      {
+        "command": "vscode-better-pet.diagnose",
+        "title": "Diagnose",
+        "category": "Buddy Unleashed"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "vscode-better-pet.toggle",
+        "key": "alt+cmd+p",
+        "mac": "alt+cmd+p",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Buddy Unleashed",
+      "properties": {
+        "betterPet.appRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the VS Code 'Resources/app' directory to patch. Leave empty to auto-detect the running editor (vscode.env.appRoot). Example (macOS): /Applications/Visual Studio Code.app/Contents/Resources/app"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./ && node -e \"var fs=require('fs');fs.copyFileSync('src/engine.js','dist/engine.js');fs.copyFileSync('src/chatPet.css','dist/chatPet.css');\"",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.100.0",
+    "typescript": "^5.5.0"
+  }
+}
