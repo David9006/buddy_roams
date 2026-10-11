@@ -2,6 +2,15 @@
   "name": "vscode-better-pet",
   "displayName": "Buddy Unleashed",
   "description": "Brings a roaming pet into the editor area using the patched `window.createEditorOverlay` API.",
+  "icon": "icon.png",
+  "extensionKind": [
+    "ui"
+  ],
+  "keywords": [
+    "pet",
+    "buddy",
+    "chat"
+  ],
   "version": "1.0.0",
   "publisher": "Gapple",
   "license": "SEE LICENSE IN LICENSE",
@@ -9,8 +18,10 @@
     "vscode": "^1.141.0"
   },
   "repository": {
-    "url": "https://github.com/David9006/buddy_unleashed"
+    "type": "git",
+    "url": "https://github.com/David9006/buddy_unleashed.git"
   },
+  "homepage": "https://github.com/David9006/buddy_unleashed/blob/main/README.md",
   "categories": [
     "Other"
   ],
