@@ -1,20 +1,20 @@
-# Buddy Unleashed — Bring the Copilot pet to the code area
+# Buddy Roams — Bring the Copilot pet to the code area
 
-Buddy Unleashed lets VS Code's Buddy pet (originally confined to the `/vscode-pet` chat command) roam the **entire code area**, walking, napping, and playing above the editor.
+Buddy Roams lets VS Code's Buddy pet (originally confined to the `/vscode-pet` chat command) roam the **entire code area**, walking, napping, and playing above the editor.
 
 ## Install & Use
 
-1. Install the extension, then run **Buddy Unleashed: Install** from the command palette.
+1. Install the extension, then run **Buddy Roams: Install** from the command palette.
 2. **Quit and restart VS Code completely**.
-3. Run **Buddy Unleashed: Toggle** (shortcut `⌥⌘P`) — 🐈 appears in the code area.
-4. To roll back: run **Buddy Unleashed: Uninstall**.
+3. Run **Buddy Roams: Toggle** (shortcut `⌥⌘P`) — 🐈 appears in the code area.
+4. To roll back: run **Buddy Roams: Uninstall**.
 
 ## Commands
 
-- **Buddy Unleashed: Install** — makes the pet available in the code area, then prompts you to restart VS Code.
-- **Buddy Unleashed: Uninstall** — one-click rollback.
-- **Buddy Unleashed: Toggle** — show/hide the pet, with the state remembered; when enabled, the pet reappears automatically on startup.
-- **Buddy Unleashed: Diagnose** — show status and diagnostic information.
+- **Buddy Roams: Install** — makes the pet available in the code area, then prompts you to restart VS Code.
+- **Buddy Roams: Uninstall** — one-click rollback.
+- **Buddy Roams: Toggle** — show/hide the pet, with the state remembered; when enabled, the pet reappears automatically on startup.
+- **Buddy Roams: Diagnose** — show status and diagnostic information.
 
 ## Pet Features (same as the original, excluding keyboard control and achievements)
 

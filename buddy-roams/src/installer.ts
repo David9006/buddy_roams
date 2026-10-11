@@ -249,14 +249,14 @@ export async function install(): Promise<void> {
 
 	if (version !== EXPECTED_VERSION) {
 		void vscode.window.showWarningMessage(
-			`Better Pet supports VS Code ${EXPECTED_VERSION}, but the app at "${root}" is ${version ?? 'unknown'}. Refusing to patch. Set "betterPet.appRoot" to point at a ${EXPECTED_VERSION} install.`,
+			`Buddy Roams supports VS Code ${EXPECTED_VERSION}, but the app at "${root}" is ${version ?? 'unknown'}. Refusing to patch. Set "betterPet.appRoot" to point at a ${EXPECTED_VERSION} install.`,
 		);
 		log(`Install aborted: version mismatch (expected ${EXPECTED_VERSION})`);
 		return;
 	}
 
 	if (isInstalled()) {
-		void vscode.window.showInformationMessage('Better Pet is already installed. Run "Better Pet: Uninstall" first if you want to re-apply.');
+		void vscode.window.showInformationMessage('Buddy Roams is already installed. Run "Buddy Roams: Uninstall" first if you want to re-apply.');
 		return;
 	}
 
@@ -337,12 +337,12 @@ export async function install(): Promise<void> {
 		}
 		try { fs.unlinkSync(manifestPath(root)); } catch { /* ignore */ }
 		log(`Install FAILED, rolled back: ${errMsg(err)}`);
-		void vscode.window.showErrorMessage(`Better Pet install failed and was rolled back: ${errMsg(err)}`);
+		void vscode.window.showErrorMessage(`Buddy Roams install failed and was rolled back: ${errMsg(err)}`);
 		return;
 	}
 
 	const action = await vscode.window.showInformationMessage(
-		'Better Pet installed into VS Code. Fully quit and relaunch VS Code for the patch to take effect, then run "Better Pet: Toggle".',
+		'Buddy Roams installed into VS Code. Fully quit and relaunch VS Code for the patch to take effect, then run "Buddy Roams: Toggle".',
 		'Restart Now',
 	);
 	if (action === 'Restart Now') {
@@ -355,7 +355,7 @@ export async function uninstall(): Promise<void> {
 	const mPath = manifestPath(root);
 
 	if (!fs.existsSync(mPath)) {
-		void vscode.window.showInformationMessage('Better Pet is not installed (no manifest found).');
+		void vscode.window.showInformationMessage('Buddy Roams is not installed (no manifest found).');
 		return;
 	}
 
@@ -363,7 +363,7 @@ export async function uninstall(): Promise<void> {
 	try {
 		manifest = JSON.parse(fs.readFileSync(mPath, 'utf-8'));
 	} catch {
-		void vscode.window.showErrorMessage(`Better Pet manifest is corrupt: ${mPath}. Restore "${BACKUP_SUFFIX}" files manually.`);
+		void vscode.window.showErrorMessage(`Buddy Roams manifest is corrupt: ${mPath}. Restore "${BACKUP_SUFFIX}" files manually.`);
 		return;
 	}
 
@@ -386,10 +386,10 @@ export async function uninstall(): Promise<void> {
 	if (ok) {
 		syncProductChecksums(root);
 		void vscode.window.showInformationMessage(
-			'Better Pet uninstalled and VS Code was reset to its original state. Restart VS Code to apply.',
+			'Buddy Roams uninstalled and VS Code was reset to its original state. Restart VS Code to apply.',
 		);
 	} else {
-		void vscode.window.showWarningMessage('Better Pet uninstall completed with warnings: some backups were missing and could not be restored.');
+		void vscode.window.showWarningMessage('Buddy Roams uninstall completed with warnings: some backups were missing and could not be restored.');
 	}
 }
 
@@ -405,7 +405,7 @@ function countOccurrences(haystack: string, needle: string): number {
 
 /**
  * Returns a human-readable summary of the current patch state, used by the
- * "Better Pet: Diagnose" command.
+ * "Buddy Roams: Diagnose" command.
  */
 export function diagnose(): string {
 	const root = appRoot();

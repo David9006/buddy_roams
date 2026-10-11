@@ -1,13 +1,13 @@
-# Buddy Unleashed (buddy-unleashed)
+# Buddy Roams (buddy-roams)
 
 Brings VS Code's **Buddy pet** from the chat box into the **code area** — using the **original sprites, animations, physics, and interactions** (the same `/vscode-pet` from Copilot chat, stable colorway).
 
 ## Commands
 
-- **Buddy Unleashed: Install** — makes the pet available in the code area, then prompts you to restart VS Code.
-- **Buddy Unleashed: Uninstall** — one-click rollback.
-- **Buddy Unleashed: Toggle** — show/hide the pet, with the state remembered; when enabled, the pet reappears automatically on startup.
-- **Buddy Unleashed: Diagnose** — show status and diagnostic information.
+- **Buddy Roams: Install** — makes the pet available in the code area, then prompts you to restart VS Code.
+- **Buddy Roams: Uninstall** — one-click rollback.
+- **Buddy Roams: Toggle** — show/hide the pet, with the state remembered; when enabled, the pet reappears automatically on startup.
+- **Buddy Roams: Diagnose** — show status and diagnostic information.
 
 ## Pet Behavior (same as the original, excluding keyboard control and achievements)
 

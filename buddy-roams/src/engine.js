@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Better Pet engine — a faithful, self-contained port of the VS Code "Buddy"
+ * Buddy Roams engine — a faithful, self-contained port of the VS Code "Buddy"
  * chat pet (src/vs/workbench/contrib/chat/browser/widget/chatPetWidget.ts)
  * adapted to run in the editor area overlay. Keyboard control and the
  * achievement system are intentionally omitted.

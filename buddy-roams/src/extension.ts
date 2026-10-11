@@ -10,7 +10,7 @@ let pet: Pet | undefined;
 export function activate(context: vscode.ExtensionContext): void {
 	log('Extension activated.');
 	context.subscriptions.push(
-		vscode.commands.registerCommand('buddy-unleashed.toggle', () => {
+		vscode.commands.registerCommand('buddy-roams.toggle', () => {
 			log('Toggle command invoked.');
 			if (pet?.isStarted()) {
 				hidePet(context);
@@ -18,15 +18,15 @@ export function activate(context: vscode.ExtensionContext): void {
 				showPet(context);
 			}
 		}),
-		vscode.commands.registerCommand('buddy-unleashed.install', () => {
+		vscode.commands.registerCommand('buddy-roams.install', () => {
 			log('Install command invoked.');
 			void install();
 		}),
-		vscode.commands.registerCommand('buddy-unleashed.uninstall', () => {
+		vscode.commands.registerCommand('buddy-roams.uninstall', () => {
 			log('Uninstall command invoked.');
 			void uninstall();
 		}),
-		vscode.commands.registerCommand('buddy-unleashed.diagnose', () => {
+		vscode.commands.registerCommand('buddy-roams.diagnose', () => {
 			const summary = diagnose();
 			log(`Diagnose:\n${summary}`);
 			void vscode.window.showInformationMessage(summary, { modal: true });
@@ -59,7 +59,7 @@ function showPet(context: vscode.ExtensionContext, quiet = false): void {
 		log('Pet started (overlay created + show + setContent).');
 	} catch (err) {
 		log(`Pet start threw: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-		void vscode.window.showErrorMessage(`Better Pet failed to start: ${err instanceof Error ? err.message : String(err)}`);
+		void vscode.window.showErrorMessage(`Buddy Roams failed to start: ${err instanceof Error ? err.message : String(err)}`);
 	}
 }
 
@@ -81,8 +81,8 @@ function isSupported(quiet = false): boolean {
 		if (!quiet) {
 			void vscode.window.showErrorMessage(
 				isInstalled()
-					? 'Better Pet is installed but VS Code has not been restarted yet. Fully quit and relaunch VS Code, then run "Better Pet: Toggle" again.'
-					: 'The editor overlay API is not available. Run "Better Pet: Install" to patch VS Code, restart, then try again. Run "Better Pet: Diagnose" for details.',
+					? 'Buddy Roams is installed but VS Code has not been restarted yet. Fully quit and relaunch VS Code, then run "Buddy Roams: Toggle" again.'
+					: 'The editor overlay API is not available. Run "Buddy Roams: Install" to patch VS Code, restart, then try again. Run "Buddy Roams: Diagnose" for details.',
 			);
 		}
 		return false;

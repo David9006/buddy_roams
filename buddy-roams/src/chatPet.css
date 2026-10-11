@@ -587,7 +587,7 @@
 
 
 /* --------------------------------------------------------------------------- */
-/* Better Pet: overlay host overrides (pet lives in the editor area, not the    */
+/* Buddy Roams: overlay host overrides (pet lives in the editor area, not the    */
 /* chat input). The button is positioned via left/top by the engine.            */
 /* --------------------------------------------------------------------------- */
 .better-pet-host {

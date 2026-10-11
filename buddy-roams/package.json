@@ -1,6 +1,6 @@
 {
-  "name": "buddy-unleashed",
-  "displayName": "Buddy Unleashed",
+  "name": "buddy-roams",
+  "displayName": "Buddy Roams",
   "description": "Brings a roaming pet into the editor area using the patched `window.createEditorOverlay` API.",
   "icon": "icon.png",
   "extensionKind": [
@@ -32,36 +32,36 @@
   "contributes": {
     "commands": [
       {
-        "command": "buddy-unleashed.toggle",
+        "command": "buddy-roams.toggle",
         "title": "Toggle",
-        "category": "Buddy Unleashed"
+        "category": "Buddy Roams"
       },
       {
-        "command": "buddy-unleashed.install",
+        "command": "buddy-roams.install",
         "title": "Install",
-        "category": "Buddy Unleashed"
+        "category": "Buddy Roams"
       },
       {
-        "command": "buddy-unleashed.uninstall",
+        "command": "buddy-roams.uninstall",
         "title": "Uninstall",
-        "category": "Buddy Unleashed"
+        "category": "Buddy Roams"
       },
       {
-        "command": "buddy-unleashed.diagnose",
+        "command": "buddy-roams.diagnose",
         "title": "Diagnose",
-        "category": "Buddy Unleashed"
+        "category": "Buddy Roams"
       }
     ],
     "keybindings": [
       {
-        "command": "buddy-unleashed.toggle",
+        "command": "buddy-roams.toggle",
         "key": "alt+cmd+p",
         "mac": "alt+cmd+p",
         "when": "editorTextFocus"
       }
     ],
     "configuration": {
-      "title": "Buddy Unleashed",
+      "title": "Buddy Roams",
       "properties": {
         "betterPet.appRoot": {
           "type": "string",
