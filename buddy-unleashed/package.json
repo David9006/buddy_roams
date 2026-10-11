@@ -1,5 +1,5 @@
 {
-  "name": "vscode-better-pet",
+  "name": "buddy-unleashed",
   "displayName": "Buddy Unleashed",
   "description": "Brings a roaming pet into the editor area using the patched `window.createEditorOverlay` API.",
   "icon": "icon.png",
@@ -32,29 +32,29 @@
   "contributes": {
     "commands": [
       {
-        "command": "vscode-better-pet.toggle",
+        "command": "buddy-unleashed.toggle",
         "title": "Toggle",
         "category": "Buddy Unleashed"
       },
       {
-        "command": "vscode-better-pet.install",
+        "command": "buddy-unleashed.install",
         "title": "Install",
         "category": "Buddy Unleashed"
       },
       {
-        "command": "vscode-better-pet.uninstall",
+        "command": "buddy-unleashed.uninstall",
         "title": "Uninstall",
         "category": "Buddy Unleashed"
       },
       {
-        "command": "vscode-better-pet.diagnose",
+        "command": "buddy-unleashed.diagnose",
         "title": "Diagnose",
         "category": "Buddy Unleashed"
       }
     ],
     "keybindings": [
       {
-        "command": "vscode-better-pet.toggle",
+        "command": "buddy-unleashed.toggle",
         "key": "alt+cmd+p",
         "mac": "alt+cmd+p",
         "when": "editorTextFocus"

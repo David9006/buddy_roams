@@ -1,4 +1,4 @@
-# Buddy Unleashed (vscode-better-pet)
+# Buddy Unleashed (buddy-unleashed)
 
 Brings VS Code's **Buddy pet** from the chat box into the **code area** — using the **original sprites, animations, physics, and interactions** (the same `/vscode-pet` from Copilot chat, stable colorway).
 

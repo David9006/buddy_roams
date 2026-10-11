@@ -10,7 +10,7 @@ let pet: Pet | undefined;
 export function activate(context: vscode.ExtensionContext): void {
 	log('Extension activated.');
 	context.subscriptions.push(
-		vscode.commands.registerCommand('vscode-better-pet.toggle', () => {
+		vscode.commands.registerCommand('buddy-unleashed.toggle', () => {
 			log('Toggle command invoked.');
 			if (pet?.isStarted()) {
 				hidePet(context);
@@ -18,15 +18,15 @@ export function activate(context: vscode.ExtensionContext): void {
 				showPet(context);
 			}
 		}),
-		vscode.commands.registerCommand('vscode-better-pet.install', () => {
+		vscode.commands.registerCommand('buddy-unleashed.install', () => {
 			log('Install command invoked.');
 			void install();
 		}),
-		vscode.commands.registerCommand('vscode-better-pet.uninstall', () => {
+		vscode.commands.registerCommand('buddy-unleashed.uninstall', () => {
 			log('Uninstall command invoked.');
 			void uninstall();
 		}),
-		vscode.commands.registerCommand('vscode-better-pet.diagnose', () => {
+		vscode.commands.registerCommand('buddy-unleashed.diagnose', () => {
 			const summary = diagnose();
 			log(`Diagnose:\n${summary}`);
 			void vscode.window.showInformationMessage(summary, { modal: true });

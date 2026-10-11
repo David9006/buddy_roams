@@ -33,6 +33,7 @@ Buddy Unleashed lets VS Code's Buddy pet (originally confined to the `/vscode-pe
 
 ## Notes
 
+- This extension does **not** support Windows.
 - Only the official **VS Code 1.141.0** build is guaranteed; Install refuses to run on other versions.
 - Re-run Install after VS Code auto-updates.
 - Every step is backed up with rollback; failures revert automatically.
