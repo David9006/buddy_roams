@@ -6,17 +6,16 @@
   "publisher": "Gapple",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
-    "vscode": "==1.141.0"
+    "vscode": "^1.141.0"
+  },
+  "repository": {
+    "url": "https://github.com/David9006/buddy_unleashed"
   },
   "categories": [
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:vscode-better-pet.toggle",
-    "onCommand:vscode-better-pet.install",
-    "onCommand:vscode-better-pet.uninstall",
-    "onCommand:vscode-better-pet.diagnose"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {

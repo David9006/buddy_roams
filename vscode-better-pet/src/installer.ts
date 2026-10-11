@@ -93,11 +93,11 @@ const EDITS: Edit[] = [
 			'}catch(err){o.built=false;o.error=String(err&&err.stack||err)}' +
 			'}' +
 			'$ttu(u){var tt=window.trustedTypes;if(!tt)return u;var a=[],i,p,err=null;' +
-			'var bp=window.__BETTER_PET_TTP;if(bp&&bp.createScriptURL)a.push(bp);' +
+			'var bp=window.__BETTER_PET_TTP;' +
+			'if(!bp){try{var f=window.__BETTER_PET_ENSURE_TTP__;if(f)f()}catch(x){err=x}bp=window.__BETTER_PET_TTP}' +
+			'if(bp&&bp.createScriptURL)a.push(bp);' +
 			'var wp=window._VSCODE_WEB_PACKAGE_TTP;if(wp&&wp.createScriptURL)a.push(wp);' +
-			'if(tt.getPolicy){try{p=tt.getPolicy("amdLoader");if(p)a.push(p)}catch(x){err=x}try{p=tt.getPolicy("defaultWorkerFactory");if(p)a.push(p)}catch(x){}}' +
-			'var names=["amdLoader","defaultWorkerFactory","chatDebugTokenizer","notebookChatEditController","richScreenReaderContent","stickyScrollViewLayer","tokenizeToString","editorGhostText","editorViewLayer","cellRendererEditorText","collapsedCellPreview","diffEditorWidget","diffReview","domLineBreaksComputer","htmlToMarkdown","notebookRenderer","dompurify","lit-html"];' +
-			'for(i=0;i<names.length;i++){try{a.push(tt.createPolicy(names[i],{createScriptURL:function(v){return v}}))}catch(x){}}' +
+			'if(tt.getPolicy){try{p=tt.getPolicy("amdLoader");if(p)a.push(p)}catch(x){err=x}}' +
 			'for(i=0;i<a.length;i++){var q=a[i];if(q&&q.createScriptURL){try{return q.createScriptURL(u)}catch(x){err=x}}}' +
 			'throw new Error("no usable trusted-types policy"+(err&&err.message?" ("+err.message+")":""))}' +
 			'$show(e){var o=this._overlays.get(e);if(o)o.host.style.display=""}' +
@@ -114,6 +114,13 @@ const EDITS: Edit[] = [
 	// stores it privately (`_amdPolicy`), so we patch the loader to also stash it
 	// on `window.__BETTER_PET_TTP`. `$ttu` then reuses it to build a
 	// TrustedScriptURL for our engine.js (its URL check allows vscode-file://vscode-app).
+	//
+	// The loader creates the policy *lazily* (on the first AMD import), so we also
+	// expose `window.__BETTER_PET_ENSURE_TTP__` to force that same initialization
+	// path early. `$ttu` must NEVER call `createPolicy` itself: pre-creating a
+	// Trusted Types policy (e.g. "amdLoader") breaks VS Code's own lazy loader,
+	// which then throws "Policy with name amdLoader already exists" and takes down
+	// the integrated terminal (xterm) and syntax highlighting (textmate).
 	{
 		label: 'workbench: expose amdLoader policy (open)',
 		file: 'wb',
@@ -125,6 +132,12 @@ const EDITS: Edit[] = [
 		file: 'wb',
 		old: 'Invalid script url: ${o}`)}}):',
 		replacement: 'Invalid script url: ${o}`)}})):',
+	},
+	{
+		label: 'workbench: expose eager amdLoader init hook',
+		file: 'wb',
+		old: 'this._state=1}static{this.INSTANCE=new s}_initialize()',
+		replacement: 'this._state=1}static{this.INSTANCE=new s,typeof window!=="undefined"&&(window.__BETTER_PET_ENSURE_TTP__=()=>this.INSTANCE._initialize())}_initialize()',
 	},
 ];
 
