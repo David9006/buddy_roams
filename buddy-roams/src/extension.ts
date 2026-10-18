@@ -31,6 +31,14 @@ export function activate(context: vscode.ExtensionContext): void {
 			log(`Diagnose:\n${summary}`);
 			void vscode.window.showInformationMessage(summary, { modal: true });
 		}),
+		vscode.commands.registerCommand('buddy-roams.grow', () => {
+			log('Grow command invoked.');
+			pet?.grow();
+		}),
+		vscode.commands.registerCommand('buddy-roams.shrink', () => {
+			log('Shrink command invoked.');
+			pet?.shrink();
+		}),
 	);
 
 	// Auto-show the pet if it was left enabled last session.

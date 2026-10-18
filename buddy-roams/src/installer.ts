@@ -66,9 +66,14 @@ const EDITS: Edit[] = [
 			'this._register(this.layoutService.onDidChangeActiveContainer(()=>this._reanchor()))}' +
 			'_editorContainer(){return this.layoutService.getContainer(window,"workbench.parts.editor")||void 0}' +
 			'_reanchor(){var a=this._editorContainer();this._overlays.forEach(function(o){if(a&&o.host.parentNode!==a)a.appendChild(o.host)})}' +
-			'$create(e,t){if(this._overlays.has(e))throw new Error("Editor overlay \'"+e+"\' already exists");var a=this._editorContainer();' +
+			'dispose(){try{try{if(window.__BETTER_PET_DISPOSE__)window.__BETTER_PET_DISPOSE__()}catch(e2){}var c=this._editorContainer();if(c){var q=c.querySelectorAll(".better-pet-host");for(var di=0;di<q.length;di++){try{q[di].remove()}catch(x){}}}}catch(e){}this._overlays.clear();super.dispose()}' +
+			'$create(e,t){if(this._overlays.has(e))throw new Error("Editor overlay \'"+e+"\' already exists");' +
+			'try{if(window.__BETTER_PET_DISPOSE__)window.__BETTER_PET_DISPOSE__()}catch(x){}' +
+			'this._overlays.forEach(function(o){try{o.host.remove()}catch(x){}if(window.__BETTER_PET_ROOT__===o.host)window.__BETTER_PET_ROOT__=void 0});this._overlays.clear();' +
+			'var a=this._editorContainer();' +
+			'if(a){var orphs=a.querySelectorAll(".better-pet-host");for(var pi=0;pi<orphs.length;pi++){try{orphs[pi].remove()}catch(x){}}}' +
 			'var h=document.createElement("div");h.className="better-pet-host";' +
-			'h.style.cssText="position:absolute;inset:0;pointer-events:none;z-index:2147483000;overflow:hidden";' +
+			'h.style.cssText="position:absolute;inset:0;pointer-events:none;z-index:14;overflow:hidden";' +
 			'if(a)a.appendChild(h);' +
 			'this._overlays.set(e,{host:h,style:null,built:false,error:null});' +
 			'var self=this;window.__BETTER_PET_MENU__=function(ev,j){self.$showMenu(e,ev,j)}}' +
@@ -102,9 +107,9 @@ const EDITS: Edit[] = [
 			'throw new Error("no usable trusted-types policy"+(err&&err.message?" ("+err.message+")":""))}' +
 			'$show(e){var o=this._overlays.get(e);if(o)o.host.style.display=""}' +
 			'$hide(e){var o=this._overlays.get(e);if(o)o.host.style.display="none"}' +
-			'$dispose(e){var o=this._overlays.get(e);if(o){this._overlays.delete(e);try{o.host.remove()}catch(t){}if(window.__BETTER_PET_ROOT__===o.host)window.__BETTER_PET_ROOT__=void 0}}' +
+			'$dispose(e){var o=this._overlays.get(e);if(o){this._overlays.delete(e);try{if(window.__BETTER_PET_DISPOSE__)window.__BETTER_PET_DISPOSE__()}catch(t){}try{o.host.remove()}catch(t){}if(window.__BETTER_PET_ROOT__===o.host)window.__BETTER_PET_ROOT__=void 0}}' +
 			'$notify(e,m){var o=this._overlays.get(e);if(o&&o.host){var ev;try{ev=new CustomEvent("betterpet-notify",{detail:m})}catch(x){ev=document.createEvent("CustomEvent");ev.initCustomEvent("betterpet-notify",false,false,m)}o.host.dispatchEvent(ev)}}' +
-			'$diagnose(e){var o=this._overlays.get(e);if(!o)return JSON.stringify({found:!1});var h=o.host,cs=getComputedStyle(h),r=h.getBoundingClientRect(),btn=h.querySelector(".chat-pet-button"),cvs=h.querySelectorAll("canvas"),cvinfo=[];for(var i=0;i<cvs.length;i++){var cv=cvs[i],nz=0;try{var ctx=cv.getContext("2d");if(ctx){var d=ctx.getImageData(0,0,cv.width,cv.height).data;for(var pj=3;pj<d.length;pj+=4){if(d[pj]>0){nz++;break}}}}catch(e2){}cvinfo.push(cv.width+"x"+cv.height+":"+nz)}var br=btn?btn.getBoundingClientRect():null,geo=null;try{if(window.__BETTER_PET_API__&&window.__BETTER_PET_API__.debugGeometry)geo=JSON.parse(window.__BETTER_PET_API__.debugGeometry())}catch(e3){}return JSON.stringify({found:!0,built:o.built,error:o.error,display:cs.display,visibility:cs.visibility,width:cs.width,height:cs.height,rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)},btn:!!btn,btnRect:br?{x:Math.round(br.x),y:Math.round(br.y),w:Math.round(br.width),h:Math.round(br.height)}:null,canvases:cvinfo,hostChildren:h.children.length,geometry:geo})}};' +
+			'$diagnose(e){var o=this._overlays.get(e);if(!o)return JSON.stringify({found:!1});var h=o.host,cs=getComputedStyle(h),r=h.getBoundingClientRect(),btn=h.querySelector(".chat-pet-button"),cvs=h.querySelectorAll("canvas"),cvinfo=[];for(var i=0;i<cvs.length;i++){var cv=cvs[i],nz=0;try{var ctx=cv.getContext("2d");if(ctx){var d=ctx.getImageData(0,0,cv.width,cv.height).data;for(var pj=3;pj<d.length;pj+=4){if(d[pj]>0){nz++;break}}}}catch(e2){}cvinfo.push(cv.width+"x"+cv.height+":"+nz)}var br=btn?btn.getBoundingClientRect():null,geo=null;try{if(window.__BETTER_PET_API__&&window.__BETTER_PET_API__.debugGeometry)geo=JSON.parse(window.__BETTER_PET_API__.debugGeometry())}catch(e3){}var ren=null;try{if(window.__BETTER_PET_API__&&window.__BETTER_PET_API__.debugRender)ren=JSON.parse(window.__BETTER_PET_API__.debugRender())}catch(e4){}return JSON.stringify({found:!0,built:o.built,error:o.error,status:window.__BETTER_PET_STATUS__||null,display:cs.display,visibility:cs.visibility,width:cs.width,height:cs.height,rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)},btn:!!btn,btnRect:br?{x:Math.round(br.x),y:Math.round(br.y),w:Math.round(br.width),h:Math.round(br.height)}:null,canvases:cvinfo,hostChildren:h.children.length,geometry:geo,render:ren})}};' +
 			'$bPEo=I([Ko(ko.MainThreadEditorOverlay),h(1,de("layoutService")),h(2,de("contextMenuService"))],$bPEo);' +
 			'var Yti=de("powerService")',
 	},

@@ -19,6 +19,95 @@
 	if (!ROOT || !document) { return; }
 
 	/* ========================================================================== */
+	/* Disposal registry                                                          */
+	/* ========================================================================== */
+	// Every timer, animation frame, and document/window listener created by this
+	// engine is tracked so a stale instance — e.g. one left behind when VS Code
+	// restarts the extension host without a graceful deactivate — can be fully
+	// torn down before a fresh instance boots. `setTimeout` and
+	// `requestAnimationFrame` are shadowed here (scoped to this IIFE), so all
+	// existing call sites are tracked automatically.
+	var __petDisposed = false;
+	var __timers = [];
+	var __raf = [];
+	var __listeners = [];
+	var __observers = [];
+
+	var __origSetTimeout = window.setTimeout.bind(window);
+	var __origClearTimeout = window.clearTimeout.bind(window);
+	var __origRequestAnimationFrame = window.requestAnimationFrame.bind(window);
+	var __origCancelAnimationFrame = window.cancelAnimationFrame.bind(window);
+
+	function setTimeout(fn, delay) {
+		var id = __origSetTimeout(function () {
+			var i = __timers.indexOf(id);
+			if (i !== -1) { __timers.splice(i, 1); }
+			fn();
+		}, delay);
+		__timers.push(id);
+		return id;
+	}
+	function clearTimeout(id) {
+		var i = __timers.indexOf(id);
+		if (i !== -1) { __timers.splice(i, 1); }
+		return __origClearTimeout(id);
+	}
+	function requestAnimationFrame(fn) {
+		var id = __origRequestAnimationFrame(function () {
+			var i = __raf.indexOf(id);
+			if (i !== -1) { __raf.splice(i, 1); }
+			fn();
+		});
+		__raf.push(id);
+		return id;
+	}
+	function cancelAnimationFrame(id) {
+		var i = __raf.indexOf(id);
+		if (i !== -1) { __raf.splice(i, 1); }
+		return __origCancelAnimationFrame(id);
+	}
+
+	// Tracks an event listener so `__disposeEngine` can remove it. Balanced with
+	// `__off` at the existing removeEventListener call sites.
+	function __on(target, type, fn, capture) {
+		if (!target || typeof target.addEventListener !== 'function') { return; }
+		target.addEventListener(type, fn, capture);
+		__listeners.push({ target: target, type: type, fn: fn, capture: capture });
+	}
+	function __off(target, type, fn, capture) {
+		if (!target || typeof target.removeEventListener !== 'function') { return; }
+		target.removeEventListener(type, fn, capture);
+		for (var i = __listeners.length - 1; i >= 0; i--) {
+			var l = __listeners[i];
+			if (l.target === target && l.type === type && l.fn === fn && l.capture === capture) {
+				__listeners.splice(i, 1);
+				break;
+			}
+		}
+	}
+
+	function __disposeEngine() {
+		__petDisposed = true;
+		for (var i = 0; i < __timers.length; i++) { __origClearTimeout(__timers[i]); }
+		__timers.length = 0;
+		for (var j = 0; j < __raf.length; j++) { __origCancelAnimationFrame(__raf[j]); }
+		__raf.length = 0;
+		for (var k = __listeners.length - 1; k >= 0; k--) {
+			var l = __listeners[k];
+			if (l.target && typeof l.target.removeEventListener === 'function') {
+				l.target.removeEventListener(l.type, l.fn, l.capture);
+			}
+		}
+		__listeners.length = 0;
+		for (var m = 0; m < __observers.length; m++) {
+			try { __observers[m].disconnect(); } catch (e) {}
+		}
+		__observers.length = 0;
+		if (window.__BETTER_PET_DISPOSE__ === __disposeEngine) { window.__BETTER_PET_DISPOSE__ = undefined; }
+		if (window.__BETTER_PET_RUN_ACTION__) { window.__BETTER_PET_RUN_ACTION__ = undefined; }
+	}
+
+	/* ========================================================================== */
 	/* Constants                                                                  */
 	/* ========================================================================== */
 
@@ -37,6 +126,19 @@
 	var IDLE_SLEEP_DELAY = 20000;
 	var ICON_TRANSFORMATION_CHANCE = 1 / 100;
 	var YAPPING_CHANCE = 1 / 100;
+	// With the pink party hat, a left click is much more likely to spin
+	// ("complete"), yap, or sing.
+	var PARTY_HAT_SPIN_CHANCE = 1 / 10;
+	var PARTY_HAT_YAPPING_CHANCE = 1 / 10;
+	var PARTY_HAT_SING_CHANCE = 1 / 5;
+	// Wizard hat: the pet periodically turns invisible (only the hat and its
+	// normal-colored eyes remain visible) for a short while.
+	var WIZARD_INVISIBLE_MIN_INTERVAL = 6000; // ms between invisibility episodes
+	var WIZARD_INVISIBLE_MAX_INTERVAL = 14000;
+	var WIZARD_INVISIBLE_DURATION = 2200; // ms each episode lasts
+	var WIZARD_EYE_COLOR = '#ff9d2f'; // orange (Halloween ghost eyes)
+	var WIZARD_TELEPORT_CHANCE_PER_SECOND = 0.5; // teleport probability per airborne second
+	var WIZARD_TELEPORT_GRACE = 150; // ms after launch before teleporting can occur
 	var WALL_IMPACT_DURATION = 48;
 	var MOUSE_BOUNCE_RELEASE_GRACE_DURATION = 500;
 	var BOUNCE_RESULT_DURATION = 5000;
@@ -68,6 +170,41 @@
 	var THROW_CEILING_RESTITUTION = 0.2;
 	var THROW_ROTATION_PER_PIXEL = 0.65;
 	var THROW_SELF_RIGHTING_START_VELOCITY = -450;
+	// April Fools' pong: the pet becomes a ball. If the active editor has a
+	// vertical scrollbar, its thumb is the paddle (it follows the mouse and the
+	// code scrolls with it); otherwise a drawn paddle follows the mouse. The
+	// ball bounces off the left wall, top, bottom, and the paddle. Missing the
+	// paddle sends the pet back to rest against the right wall.
+	var PONG_BALL_SPEED = 420; // px/s; minimum ball speed
+	var PONG_PADDLE_WIDTH = 14; // px; drawn paddle thickness
+	var PONG_PADDLE_HEIGHT = 110; // px; drawn paddle length
+	var PONG_PADDLE_MAX_ANGLE = 60; // deg; paddle edge deflects the ball up to this
+	var PONG_WHEEL_MAX = 60; // max |wheel deltaY| per frame when steering the scrollbar
+	// Spinner-hat "bamboo copter" glide: when thrown upward, the pet rises with
+	// strong drag and its head down, then floats down slowly with its head up
+	// while the body "spins" around the vertical axis by rapidly swapping the
+	// left/right sprite until it lands.
+	var SPINNER_ASCENT_GRAVITY = 3600; // px/s^2; strong drag while rising
+	var SPINNER_DESCENT_GRAVITY = 600; // px/s^2; ~1/3 of THROW_GRAVITY for a slow glide
+	var SPINNER_ASCENT_ROTATION = 180; // deg; head points opposite the motion (down)
+	var SPINNER_FLIP_INTERVAL = 90; // ms per left/right sprite swap while spinning
+	// A mouse throw while wearing the propeller hat behaves like the spinner
+	// hat's "bamboo copter", but with stronger drag on the way up and a slightly
+	// worse glide on the way down.
+	var PROPELLER_THROW_ASCENT_GRAVITY = 5400; // px/s^2; stronger drag than the spinner
+	var PROPELLER_THROW_DESCENT_GRAVITY = 950; // px/s^2; slightly worse glide than the spinner
+	var PROPELLER_THROW_FLIP_INTERVAL = 90; // ms per left/right sprite swap while spinning
+	// Propeller-hat "helicopter" lift: rapid mouse-driven facing switches wind
+	// the propeller up and lift the pet. Lift decays to zero, then it glides
+	// down like the spinner hat.
+	var PROPELLER_WIGGLE_COUNT = 4; // facing switches needed to spin up
+	var PROPELLER_WIGGLE_MAX_INTERVAL = 160; // ms; switches must occur within this window
+	var PROPELLER_LIFT_UPWARD_VELOCITY = -700; // px/s initial rise
+	var PROPELLER_ASCENT_DECELERATION = 500; // px/s^2; net deceleration while rising
+	var PROPELLER_DESCENT_GRAVITY = 600; // px/s^2; slow glide while falling
+	var PROPELLER_FLIP_INTERVAL_START = 45; // ms per flip at takeoff (fast)
+	var PROPELLER_FLIP_INTERVAL_END = 160; // ms per flip once the propeller winds down
+	var PROPELLER_SPIN_DECAY_TIME = 1500; // ms for the flip rate to slow from start to end
 	var THROW_SELF_RIGHTING_SPEED = 720;
 	var MOUSE_BOUNCE_MIN_UPWARD_VELOCITY = 760;
 	var MOUSE_BOUNCE_MAX_UPWARD_VELOCITY = 1800;
@@ -244,12 +381,17 @@
 		}
 	}
 
-	function getChatPetClickInteraction(random, previousInteraction) {
-		if (random < ICON_TRANSFORMATION_CHANCE) { return 'complete'; }
-		var yappingThreshold = ICON_TRANSFORMATION_CHANCE + YAPPING_CHANCE;
-		if (random < yappingThreshold) { return 'yapping'; }
-		var available = CLICK_INTERACTIONS.filter(function (i) { return i !== previousInteraction; });
-		var normalized = (random - yappingThreshold) / (1 - yappingThreshold);
+	function getChatPetClickInteraction(random, previousInteraction, partyHat) {
+		var spinChance = partyHat ? PARTY_HAT_SPIN_CHANCE : ICON_TRANSFORMATION_CHANCE;
+		if (random < spinChance) { return 'complete'; }
+		var yappingEnd = spinChance + (partyHat ? PARTY_HAT_YAPPING_CHANCE : YAPPING_CHANCE);
+		if (random < yappingEnd) { return 'yapping'; }
+		var singEnd = yappingEnd + (partyHat ? PARTY_HAT_SING_CHANCE : 0);
+		if (random < singEnd) { return 'sing'; }
+		var available = CLICK_INTERACTIONS.filter(function (i) {
+			return i !== previousInteraction && (!partyHat || i !== 'sing');
+		});
+		var normalized = (random - singEnd) / (1 - singEnd);
 		return available[Math.min(Math.floor(normalized * available.length), available.length - 1)];
 	}
 
@@ -295,12 +437,6 @@
 
 	function getChatPetDefaultHorizontalPosition(minimumLeft, maximumLeft) {
 		return Math.max(minimumLeft, maximumLeft - CHAT_PET_DEFAULT_RIGHT_INSET);
-	}
-
-	function getChatPetRestoredHorizontalPosition(relativePosition, minimumLeft, maximumLeft) {
-		return relativePosition === undefined
-			? getChatPetDefaultHorizontalPosition(minimumLeft, maximumLeft)
-			: getChatPetHorizontalPosition(minimumLeft + relativePosition * Math.max(0, maximumLeft - minimumLeft), minimumLeft, maximumLeft);
 	}
 
 	function getChatPetRelativeHorizontalPosition(left, minimumLeft, maximumLeft) {
@@ -385,7 +521,8 @@
 		return verticalVelocity > 0;
 	}
 
-	function advanceChatPetThrow(motion, elapsed, bounds) {
+	function advanceChatPetThrow(motion, elapsed, bounds, gravity) {
+		var g = gravity !== undefined ? gravity : THROW_GRAVITY;
 		var duration = Math.max(0, elapsed) / 1000;
 		var projectedLeft = motion.left + motion.x * duration;
 		var hasHorizontalRange = bounds.maximumLeft > bounds.minimumLeft;
@@ -403,8 +540,8 @@
 			left = bounds.maximumLeft;
 		}
 
-		var top = motion.top + motion.y * motionDuration + THROW_GRAVITY * motionDuration * motionDuration / 2;
-		var velocityY = motion.y + THROW_GRAVITY * motionDuration;
+		var top = motion.top + motion.y * motionDuration + g * motionDuration * motionDuration / 2;
+		var velocityY = motion.y + g * motionDuration;
 		if (top < bounds.minimumTop) {
 			top = bounds.minimumTop;
 			velocityY = Math.abs(velocityY) * THROW_CEILING_RESTITUTION;
@@ -880,14 +1017,16 @@
 		}
 	}
 
-	function drawChatPetComposite(context, bodyImage, accessoryImage, bodyFrameIndex, rigFrameIndex, frameWidth, frameHeight, facingDirection, state, fixedOrientationDecorations, includeEyeAccessory, eyeAccessoryMirrorsWithFacing, coversAntennae, color, spriteKey) {
+	function drawChatPetComposite(context, bodyImage, accessoryImage, bodyFrameIndex, rigFrameIndex, frameWidth, frameHeight, facingDirection, state, fixedOrientationDecorations, includeEyeAccessory, eyeAccessoryMirrorsWithFacing, coversAntennae, color, spriteKey, skipBody) {
 		context.clearRect(0, 0, frameWidth, frameHeight);
 		var sourceX = bodyFrameIndex * frameWidth;
 		var coloredBody = color ? getChatPetColoredSprite(bodyImage, color, spriteKey) : bodyImage;
 		var rigFrame = getChatPetAccessoryRigFrame(state, rigFrameIndex);
 		if (fixedOrientationDecorations !== undefined && facingDirection === 'left') {
-			drawMirroredChatPetLayer(context, coloredBody, sourceX, 0, frameWidth, frameHeight);
-			drawFixedOrientationDecorations(context, coloredBody, bodyFrameIndex, frameWidth, fixedOrientationDecorations);
+			if (!skipBody) {
+				drawMirroredChatPetLayer(context, coloredBody, sourceX, 0, frameWidth, frameHeight);
+				drawFixedOrientationDecorations(context, coloredBody, bodyFrameIndex, frameWidth, fixedOrientationDecorations);
+			}
 			if (accessoryImage) {
 				if (coversAntennae) { clearChatPetAntennae(context, state, rigFrameIndex, frameWidth, true); }
 				context.save();
@@ -908,7 +1047,9 @@
 		if (accessoryImage) {
 			drawTrackedAccessoryLayer(context, accessoryImage, rigFrame, 'back', frameWidth);
 		}
-		context.drawImage(coloredBody, sourceX, 0, frameWidth, frameHeight, 0, 0, frameWidth, frameHeight);
+		if (!skipBody) {
+			context.drawImage(coloredBody, sourceX, 0, frameWidth, frameHeight, 0, 0, frameWidth, frameHeight);
+		}
 		if (accessoryImage) {
 			if (coversAntennae) {
 				clearChatPetAntennae(context, state, rigFrameIndex, frameWidth, false);
@@ -1326,6 +1467,8 @@
 		var selectedAccessory = readAccessory();
 		var onTheRun = false;
 		var cursorRun = false; // on-the-run entered automatically because cornered
+		var suggestRun = false; // on-the-run entered because blocking the suggest widget
+		var manualRun = false; // on-the-run entered by the user via the context menu
 		var horizontalPosition = readHorizontalPosition();
 
 		var idleExpired = false;
@@ -1339,7 +1482,43 @@
 		var typingActive = false;
 		var typingTimer = null;
 		var baseLeft = 0;
+		var baseTop = 0;
 		var avoidanceTimer = null;
+		var fallWatchdogTimer = null;
+		var pendingRandomize = false;
+		var propellerWiggleCount = 0;
+		var propellerWiggleLastTime = 0;
+		var wizardInvisible = false;
+		var wizardInvisibleTimer = null;
+		var wizardInvisibleEndTimer = null;
+		// Halloween (Oct 31, local time): the pet is a ghost all day — its body
+		// is hidden and only the hat and eyes remain visible.
+		var halloweenGhost = (function () { var d = new Date(); return d.getMonth() === 9 && d.getDate() === 31; })();
+		// April Fools' (Apr 1, local time): gravity points to the right — the pet
+		// rests against the right wall, and a mouse throw starts a game of pong
+		// instead of the usual throw-and-fall.
+		var aprilFools = (function () { var d = new Date(); return d.getMonth() === 3 && d.getDate() === 1; })();
+
+		/* --- pong (April Fools') state ---------------------------------------- */
+		var gravityPose = false;
+		var pongActive = false;
+		var pongMotion = null;
+		var pongPaddleEl = null; // drawn paddle (fallback when no scrollbar)
+		var pongPaddleLeftX = 0; // overlay-x of the paddle's left face
+		var pongPaddleTop = 0; // overlay-y of the paddle's top edge
+		var pongPaddleBottom = 0; // overlay-y of the paddle's bottom edge
+		var pongPaddleFullHeight = false; // true when the whole right edge is the paddle
+		var pongLastFrameTime = 0;
+		var pongStartTime = 0;
+		var pongPaddleMode = 'none'; // 'scrollbar' | 'drawn' | 'none'
+		var pongWheelCalibrated = false;
+		var pongWheelPerLine = -1; // thumb px moved per +1 wheel deltaY (calibrated)
+		var pongProbeActive = false;
+		var pongProbeBefore = 0;
+		var pongProbeFrames = 0;
+		var pongRotation = 0;
+		var pongAnimationId = 0;
+		var pongScore = 0;
 
 		/* --- physics state --------------------------------------------------- */
 		var cursorPosition;
@@ -1354,6 +1533,8 @@
 		var fallLandsOnPlatform = false;
 		var hasCustomPosition = false;
 		var horizontalAnchor;
+		var verticalAnchor;
+		var verticalPosition;
 		var activeFrameIndex = 0;
 		var activeSprite;
 		var activeSource;
@@ -1590,20 +1771,154 @@
 			updateSpeechBubblePosition();
 		}
 
-		function restoreHorizontalPosition() {
+		/**
+		 * Drops the pet at a random spot along the floor. Used on every show
+		 * (toggle-on or a freshly opened window) so the pet doesn't always turn
+		 * up in the same corner. If the editor bounds aren't laid out yet, the
+		 * request is deferred until they are (see updateRestingPosition).
+		 */
+		function randomizeHorizontalPosition() {
 			var bounds = getHorizontalBounds();
-			if (!bounds) { return; }
-			var left = getChatPetRestoredHorizontalPosition(horizontalPosition, bounds.minimumLeft, bounds.maximumLeft);
+			if (!bounds) { pendingRandomize = true; return false; }
+			pendingRandomize = false;
+			var left = bounds.minimumLeft + Math.random() * Math.max(0, bounds.maximumLeft - bounds.minimumLeft);
+			left = getChatPetHorizontalPosition(left, bounds.minimumLeft, bounds.maximumLeft);
 			button.style.left = left + 'px';
 			button.style.right = 'auto';
 			baseLeft = left;
-			hasCustomPosition = horizontalPosition !== undefined;
-			horizontalAnchor = horizontalPosition === undefined ? undefined : getChatPetHorizontalAnchor(left, bounds.minimumLeft, bounds.maximumLeft);
+			hasCustomPosition = true;
+			horizontalAnchor = undefined;
+			var relative = getChatPetRelativeHorizontalPosition(left, bounds.minimumLeft, bounds.maximumLeft);
+			if (relative !== undefined) {
+				horizontalPosition = relative;
+				storageSet('horizontalPosition', String(relative));
+			}
 			updateSpeechBubblePosition();
+			return true;
+		}
+
+		/* --- vertical free axis (April Fools': the floor is the right wall) ----- */
+		function getVerticalBounds() {
+			var max = Math.max(0, floorTop() - displaySize());
+			return { minimumTop: 0, maximumTop: max };
+		}
+
+		function getChatPetVerticalPosition(top, minimumTop, maximumTop) {
+			return Math.max(minimumTop, Math.min(Math.max(minimumTop, maximumTop), top));
+		}
+
+		function getChatPetRelativeVerticalPosition(top, minimumTop, maximumTop) {
+			var range = maximumTop - minimumTop;
+			if (range <= 0) { return undefined; }
+			return clamp((top - minimumTop) / range, 0, 1);
+		}
+
+		function getChatPetVerticalAnchor(top, minimumTop, maximumTop) {
+			var clampedTop = getChatPetVerticalPosition(top, minimumTop, maximumTop);
+			var normalizedMax = Math.max(minimumTop, maximumTop);
+			var topInset = clampedTop - minimumTop;
+			var bottomInset = normalizedMax - clampedTop;
+			return topInset <= bottomInset ? { edge: 'top', inset: topInset } : { edge: 'bottom', inset: bottomInset };
+		}
+
+		function getChatPetAnchoredVerticalPosition(anchor, minimumTop, maximumTop) {
+			var normalizedMax = Math.max(minimumTop, maximumTop);
+			var top = anchor.edge === 'top' ? minimumTop + anchor.inset : normalizedMax - anchor.inset;
+			return getChatPetVerticalPosition(top, minimumTop, normalizedMax);
+		}
+
+		function setVerticalPosition(top, updateAnchor) {
+			var bounds = getVerticalBounds();
+			if (!bounds) { return false; }
+			var clampedTop = getChatPetVerticalPosition(top, bounds.minimumTop, bounds.maximumTop);
+			button.style.top = clampedTop + 'px';
+			button.style.bottom = 'auto';
+			baseTop = clampedTop;
+			hasCustomPosition = true;
+			if (updateAnchor) {
+				verticalAnchor = getChatPetVerticalAnchor(clampedTop, bounds.minimumTop, bounds.maximumTop);
+				var relative = getChatPetRelativeVerticalPosition(clampedTop, bounds.minimumTop, bounds.maximumTop);
+				if (relative !== undefined) { verticalPosition = relative; storageSet('verticalPosition', String(relative)); }
+			}
+			updateSpeechBubblePosition();
+			return clampedTop !== top;
+		}
+
+		function setDefaultVerticalPosition() {
+			var bounds = getVerticalBounds();
+			if (!bounds) { return; }
+			var top = Math.max(bounds.minimumTop, bounds.maximumTop - CHAT_PET_DEFAULT_RIGHT_INSET);
+			button.style.top = top + 'px';
+			button.style.bottom = 'auto';
+			baseTop = top;
+			hasCustomPosition = false;
+			verticalAnchor = undefined;
+			updateSpeechBubblePosition();
+		}
+
+		function randomizeVerticalPosition() {
+			var bounds = getVerticalBounds();
+			if (!bounds) { pendingRandomize = true; return false; }
+			pendingRandomize = false;
+			var top = bounds.minimumTop + Math.random() * Math.max(0, bounds.maximumTop - bounds.minimumTop);
+			top = getChatPetVerticalPosition(top, bounds.minimumTop, bounds.maximumTop);
+			button.style.top = top + 'px';
+			button.style.bottom = 'auto';
+			baseTop = top;
+			hasCustomPosition = true;
+			verticalAnchor = undefined;
+			var relative = getChatPetRelativeVerticalPosition(top, bounds.minimumTop, bounds.maximumTop);
+			if (relative !== undefined) { verticalPosition = relative; storageSet('verticalPosition', String(relative)); }
+			updateSpeechBubblePosition();
+			return true;
+		}
+
+		/** Pin the pet horizontally against the right wall using explicit
+		 * left/top (never `right`/`bottom`, which leave the rotated pet
+		 * invisible). The vertical position is set by the vertical free-axis
+		 * functions. */
+		function setRightWallRest() {
+			var bounds = getHorizontalBounds();
+			var left = bounds ? bounds.maximumLeft : 0;
+			button.style.left = left + 'px';
+			button.style.right = 'auto';
+			button.style.bottom = 'auto';
+			baseLeft = left;
+		}
+
+		/** Place the resting pet against the right wall, keeping (or resetting)
+		 * its vertical free-axis position — the April Fools' mirror of the
+		 * normal floor rest. */
+		function placeGravityRest() {
+			if (pendingRandomize) {
+				randomizeVerticalPosition();
+			} else if (hasCustomPosition) {
+				var bounds = getVerticalBounds();
+				if (!bounds) { return; }
+				var top = verticalAnchor ? getChatPetAnchoredVerticalPosition(verticalAnchor, bounds.minimumTop, bounds.maximumTop) : baseTop;
+				setVerticalPosition(top, false);
+			} else {
+				setDefaultVerticalPosition();
+			}
+			setRightWallRest();
+		}
+
+		/** Drop the pet at a random spot along the right wall. */
+		function randomizeGravityRest() {
+			pendingRandomize = true;
+			placeGravityRest();
 		}
 
 		function updateRestingPosition() {
 			if (isDragging) { return; }
+			// April Fools': the floor is the right wall; the vertical axis is
+			// the free (randomized/dragged) axis, mirroring the normal pet.
+			if (aprilFools) { placeGravityRest(); return; }
+			if (pendingRandomize) {
+				randomizeHorizontalPosition();
+				updateVerticalPosition();
+				return;
+			}
 			if (hasCustomPosition) {
 				var bounds = getHorizontalBounds();
 				if (!bounds) { return; }
@@ -1632,10 +1947,27 @@
 			var display = displaySize();
 			button.style.width = display + 'px';
 			button.style.height = display + 'px';
-			visual.style.transform = 'scale(' + scale + ')';
+			applyVisualTransform();
 			updateBounceCounterPosition();
 			if (button.classList.contains('throwing')) { throwGeometryDirty = true; }
 			if (!isDragging && !isAirborne()) { updateRestingPosition(); }
+		}
+
+		/**
+		 * April Fools' gravity points right: the whole pet (sprites, eyes,
+		 * accessory) is rotated -90° around the visual's center so its feet face
+		 * the right wall while staying inside the button box.
+		 */
+		function applyVisualTransform() {
+			var pose = gravityPose && aprilFools;
+			visual.style.transformOrigin = pose ? 'center' : 'bottom left';
+			visual.style.transform = 'scale(' + scale + ')' + (pose ? ' rotate(-90deg)' : '');
+		}
+
+		function setGravityPose(on) {
+			if (gravityPose === on) { return; }
+			gravityPose = on;
+			applyVisualTransform();
 		}
 
 		/* --- facing / gaze ---------------------------------------------------- */
@@ -1651,11 +1983,37 @@
 
 		function recordDirectionChange(direction) {
 			if (transientState === 'dizzy') { return false; }
+			// Propeller hat: rapid mouse-driven facing switches wind the propeller
+			// up and lift the pet instead of making it dizzy. Disabled on April
+			// Fools' (no hat special features).
+			if (selectedAccessory === 'propellerHat' && !motionReduced && !isAirborne() && !onTheRun && !isDragging && !aprilFools) {
+				notePropellerWiggle();
+				return false;
+			}
 			if (!directionChangeController.record(direction, now())) { return false; }
 			setFacingDirection(direction);
 			showTransientState('dizzy', false);
 			status('The VS Code pet got dizzy');
 			return true;
+		}
+
+		function notePropellerWiggle() {
+			var t = now();
+			if (propellerWiggleLastTime && t - propellerWiggleLastTime > PROPELLER_WIGGLE_MAX_INTERVAL) {
+				propellerWiggleCount = 0;
+			}
+			propellerWiggleLastTime = t;
+			propellerWiggleCount++;
+			if (propellerWiggleCount < PROPELLER_WIGGLE_COUNT) { return; }
+			propellerWiggleCount = 0;
+			propellerWiggleLastTime = 0;
+			beginPropellerLift();
+		}
+
+		function beginPropellerLift() {
+			wake();
+			beginThrow({ x: 0, y: PROPELLER_LIFT_UPWARD_VELOCITY }, false, 0, false, true);
+			status('The VS Code pet floated up on its propeller hat');
 		}
 
 		function snapFacingToCursor() {
@@ -1795,11 +2153,13 @@
 		}
 
 		function onBodyImageLoad(sprite) {
+			console.log('[better-pet] body image load, hasPending=' + !!pendingRender + ', match=' + !!(pendingRender && pendingRender.sprite === sprite) + ', nw=' + sprite.image.naturalWidth + ', src=' + (sprite.image.getAttribute('src') || '').slice(0, 40));
 			if (!pendingRender || pendingRender.sprite !== sprite) { return; }
 			tryCompletePendingRender();
 		}
 
 		function onBodyImageError(sprite) {
+			console.error('[better-pet] body image ERROR, hasPending=' + !!pendingRender + ', src=' + (sprite.image.getAttribute('src') || '').slice(0, 40));
 			if (!pendingRender || pendingRender.sprite !== sprite || sprite.image.getAttribute('src') !== pendingRender.bodySource.url) { return; }
 			pendingRender = undefined;
 		}
@@ -1911,6 +2271,7 @@
 						!!(accessory && accessory.coversAntennae),
 						color,
 						spriteKey,
+						wizardInvisible || halloweenGhost,
 					);
 					drawEyeAccessoryLayer(sprite.activeAccessory, sprite.activeAccessoryImage, source, state, source.accessoryRigFrame !== undefined ? source.accessoryRigFrame : frameIndex);
 				} else {
@@ -1928,7 +2289,7 @@
 				}
 			};
 			if (sprite === activeSprite) {
-				eyes.style.color = getChatPetEyeColor(color);
+				applyEyeColor();
 				redrawEyeAccessory = state
 					? function () { drawEyeAccessoryLayer(sprite.activeAccessory, sprite.activeAccessoryImage, source, state, source.accessoryRigFrame !== undefined ? source.accessoryRigFrame : activeFrameIndex); }
 					: undefined;
@@ -1953,7 +2314,7 @@
 				cancelled = true;
 				clearFrameTimer();
 				if (visListener) {
-					document.removeEventListener('visibilitychange', visListener);
+					__off(document, 'visibilitychange', visListener);
 					visListener = null;
 				}
 			};
@@ -1984,7 +2345,7 @@
 				clearFrameTimer();
 				if (!document.hidden) { updateFrame(); }
 			};
-			document.addEventListener('visibilitychange', visListener);
+			__on(document, 'visibilitychange', visListener);
 			scheduleFrame(frameDurations[initialFrameIndex]);
 			return cancel;
 		}
@@ -2069,6 +2430,7 @@
 
 		/* --- the render loop ------------------------------------------------------ */
 		function renderLoop() {
+			if (__petDisposed) { return; }
 			var baseState = getChatPetBaseState(idleExpired, typingActive);
 			var rendered = getChatPetRenderedState(baseState, transientState, isDragging);
 			if (rendered !== 'idle' && rendered !== 'splat') { dismissBounceResult(); }
@@ -2081,6 +2443,7 @@
 		 * last keystroke.
 		 */
 		function setTypingActive(on) {
+			if (__petDisposed) { return; }
 			clearTimeout(typingTimer);
 			if (on) {
 				if (!typingActive) {
@@ -2110,7 +2473,7 @@
 
 		/* --- interactions ---------------------------------------------------------- */
 		function isAirborne() {
-			return button.classList.contains('falling') || button.classList.contains('throwing');
+			return pongActive || button.classList.contains('falling') || button.classList.contains('throwing');
 		}
 
 		var dragSamples = [];
@@ -2155,9 +2518,9 @@
 			}
 
 			function onUp(upEvent) {
-				document.removeEventListener('pointermove', onMove);
-				document.removeEventListener('pointerup', onUp);
-				document.removeEventListener('pointercancel', onUp);
+				__off(document, 'pointermove', onMove);
+				__off(document, 'pointerup', onUp);
+				__off(document, 'pointercancel', onUp);
 				if (upEvent instanceof PointerEvent) { trackCursor(upEvent); }
 				button.classList.remove('dragging', 'resisting', 'soft-resisting');
 				if (didDrag) {
@@ -2167,16 +2530,19 @@
 					isDragging = false;
 					var throwVelocity = getChatPetThrowVelocity(dragSamples, now());
 					if (!motionReduced && throwVelocity) {
-						beginThrow(throwVelocity, false, MOUSE_BOUNCE_RELEASE_GRACE_DURATION);
+						// April Fools': a mouse throw starts pong instead of the
+						// usual toss-and-fall physics.
+						if (aprilFools) { startPong(throwVelocity); }
+						else { beginThrow(throwVelocity, false, MOUSE_BOUNCE_RELEASE_GRACE_DURATION); }
 					} else {
 						beginFall(MOUSE_BOUNCE_RELEASE_GRACE_DURATION);
 					}
 				}
 			}
 
-			document.addEventListener('pointermove', onMove);
-			document.addEventListener('pointerup', onUp);
-			document.addEventListener('pointercancel', onUp);
+			__on(document, 'pointermove', onMove);
+			__on(document, 'pointerup', onUp);
+			__on(document, 'pointercancel', onUp);
 		}
 
 		function setDragPosition(left, top) {
@@ -2200,10 +2566,406 @@
 			}
 		}
 
+		/* --- April Fools' pong ---------------------------------------------------- */
+		function startPong(throwVelocity) {
+			if (pongActive) { return; }
+			wake();
+			var bounds = overlayRect();
+			var buttonBounds = button.getBoundingClientRect();
+			// The ball carries the throw's initial velocity. If none is given
+			// (defensive fallback), launch left with a slight random angle.
+			var vx, vy;
+			if (throwVelocity) {
+				vx = throwVelocity.x;
+				vy = throwVelocity.y;
+			} else {
+				var angle = (Math.random() * 0.6 - 0.3) * Math.PI;
+				vx = -Math.cos(angle) * PONG_BALL_SPEED;
+				vy = Math.sin(angle) * PONG_BALL_SPEED;
+			}
+			pongMotion = {
+				left: buttonBounds.left - bounds.left,
+				top: buttonBounds.top - bounds.top,
+				x: vx,
+				y: vy,
+			};
+			pongActive = true;
+			pongScore = 0;
+			pongRotation = 0;
+			pongStartTime = now();
+			pongPaddleMode = 'none';
+			pongWheelCalibrated = false;
+			pongProbeActive = false;
+			// The ball flies right-side-up (the rotated pose is only for resting
+			// against the right wall).
+			setGravityPose(false);
+			button.style.transform = '';
+			button.style.left = pongMotion.left + 'px';
+			button.style.top = pongMotion.top + 'px';
+			button.style.right = 'auto';
+			button.style.bottom = 'auto';
+			button.classList.remove('falling');
+			button.style.transitionDuration = '';
+			clearTimeout(fallWatchdogTimer);
+			fallWatchdogTimer = null;
+			clearTimeout(transientTimer);
+			transientState = 'falling';
+			isDragging = false;
+			renderState('falling', true);
+			button.classList.add('throwing');
+
+			// Scoreboard: the number shown at the pet's top-right (reuses the
+			// bounce counter, like the non-April-Fools' bounce streak).
+			bounceCounter.textContent = '';
+			bounceCounter.classList.add('hidden');
+			updatePongScore();
+			updatePongPaddle();
+
+			// Wizard hat works inside pong too: re-arm its periodic invisibility
+			// (only while the game is running and the hat is worn).
+			scheduleWizardInvisibility();
+
+			status('The VS Code pet is playing pong');
+			pongLastFrameTime = now();
+			pongAnimationId++;
+			requestAnimationFrame(pongFrame);
+		}
+
+		function updatePongScore() {
+			// Show the hit count as a plain number at the pet's top-right.
+			if (pongScore === 0) {
+				bounceCounter.textContent = '';
+				bounceCounter.classList.add('hidden');
+				return;
+			}
+			bounceCounter.textContent = String(pongScore);
+			bounceCounter.classList.remove('hidden');
+			updateBounceCounterPosition();
+		}
+
+		/**
+		 * The paddle is the editor's own vertical scrollbar thumb when the code
+		 * is scrollable; it follows the mouse (scrolling the code along with it)
+		 * and is forced visible. Without a scrollbar, a drawn paddle follows the
+		 * mouse instead.
+		 *
+		 * Monaco virtualizes the editor: `.lines-content` has a fixed huge
+		 * height and the real scroll position lives inside Monaco's `Scrollable`
+		 * model, so writing `scrollTop` to the DOM does nothing. The one DOM path
+		 * that drives it is the native `wheel` event, which Monaco converts into
+		 * a scroll delta. We therefore calibrate the wheel→thumb mapping once,
+		 * then steer the thumb to the mouse by dispatching wheel events.
+		 */
+		function updatePongPaddle() {
+			var bounds = overlayRect();
+			var mouseY = cursorPosition ? cursorPosition[1] - bounds.top : null;
+			var info = findPongScrollbar();
+
+			if (info) {
+				setPongPaddleMode('scrollbar');
+				var bar = info.bar;
+				var slider = info.slider;
+				var wheelTarget = info.wheelTarget;
+				forceScrollbarVisible(bar);
+
+				var track = bar.getBoundingClientRect();
+				var thumb = slider.getBoundingClientRect();
+				var trackTop = track.top - bounds.top;
+				var trackH = track.height;
+				var thumbH = Math.max(1, thumb.height);
+				var thumbTop = thumb.top - bounds.top - trackTop;
+				var thumbRange = Math.max(1, trackH - thumbH);
+
+				// Learn how far the thumb moves per wheel unit (once).
+				ensurePongWheelCalibrated(bar, slider, wheelTarget);
+
+				// Steer the thumb to follow the mouse.
+				var desiredThumbTop = 0;
+				if (mouseY !== null) {
+					desiredThumbTop = clamp((mouseY - trackTop) - thumbH / 2, 0, thumbRange);
+					var error = desiredThumbTop - thumbTop;
+					if (pongWheelCalibrated && Math.abs(error) > 1) {
+						var wheelDeltaY = clamp(error / pongWheelPerLine, -PONG_WHEEL_MAX, PONG_WHEEL_MAX);
+						dispatchPongWheel(wheelTarget, wheelDeltaY);
+					}
+				}
+
+				// Collision rect uses the steered (mouse) position so gameplay
+				// stays responsive; the thumb catches up within a frame or two.
+				pongPaddleLeftX = track.left - bounds.left;
+				pongPaddleTop = trackTop + desiredThumbTop;
+				pongPaddleBottom = pongPaddleTop + thumbH;
+				pongPaddleFullHeight = false;
+				removeDrawnPaddle();
+				return;
+			}
+
+			// No scrollbar: draw a paddle following the mouse.
+			setPongPaddleMode('drawn');
+			var top = (mouseY !== null ? mouseY : (floorTop() - PONG_PADDLE_HEIGHT) / 2) - PONG_PADDLE_HEIGHT / 2;
+			top = clamp(top, 0, Math.max(0, floorTop() - PONG_PADDLE_HEIGHT));
+			if (!pongPaddleEl) {
+				pongPaddleEl = document.createElement('div');
+				pongPaddleEl.className = 'better-pet-pong-paddle';
+				pongPaddleEl.setAttribute('aria-hidden', 'true');
+				pongPaddleEl.style.cssText = 'position:absolute;pointer-events:none;border-radius:6px;background:var(--vscode-charts-blue,#3794ff);box-shadow:0 2px 8px rgba(0,0,0,.25);opacity:.9;';
+				overlay.appendChild(pongPaddleEl);
+			}
+			pongPaddleEl.style.right = '0px';
+			pongPaddleEl.style.top = top + 'px';
+			pongPaddleEl.style.width = PONG_PADDLE_WIDTH + 'px';
+			pongPaddleEl.style.height = PONG_PADDLE_HEIGHT + 'px';
+			pongPaddleLeftX = bounds.width - PONG_PADDLE_WIDTH;
+			pongPaddleTop = top;
+			pongPaddleBottom = top + PONG_PADDLE_HEIGHT;
+			pongPaddleFullHeight = false;
+		}
+
+		function ensurePongWheelCalibrated(bar, slider, wheelTarget) {
+			if (pongWheelCalibrated) { return; }
+			if (!pongProbeActive) {
+				var track = bar.getBoundingClientRect();
+				var thumb = slider.getBoundingClientRect();
+				pongProbeBefore = thumb.top - track.top;
+				pongProbeFrames = 0;
+				pongProbeActive = true;
+				dispatchPongWheel(wheelTarget, -2);
+				return;
+			}
+			pongProbeFrames++;
+			var t2 = bar.getBoundingClientRect();
+			var th2 = slider.getBoundingClientRect();
+			var after = th2.top - t2.top;
+			if (after !== pongProbeBefore) {
+				pongWheelPerLine = (after - pongProbeBefore) / -2;
+				pongWheelCalibrated = true;
+				pongProbeActive = false;
+				console.log('[better-pet] pong wheel calibrated: ' + pongWheelPerLine.toFixed(4) + ' px/line');
+			} else if (pongProbeFrames > 10) {
+				pongWheelPerLine = -1;
+				pongWheelCalibrated = true;
+				pongProbeActive = false;
+				console.log('[better-pet] pong wheel calibration failed; using -1 px/line');
+			}
+		}
+
+		function dispatchPongWheel(target, deltaY) {
+			if (!target || typeof target.dispatchEvent !== 'function') { return; }
+			try {
+				target.dispatchEvent(new WheelEvent('wheel', {
+					deltaY: deltaY,
+					deltaX: 0,
+					bubbles: true,
+					cancelable: true,
+				}));
+			} catch (e1) {
+				try {
+					var ev = document.createEvent('WheelEvent');
+					ev.initWheelEvent('wheel', true, true, window, 0, 0, 0, 0, 0, 0, deltaY, 0, 0);
+					target.dispatchEvent(ev);
+				} catch (e2) { /* ignore */ }
+			}
+		}
+
+		function setPongPaddleMode(mode) {
+			if (pongPaddleMode !== mode) {
+				pongPaddleMode = mode;
+				console.log('[better-pet] pong paddle mode: ' + mode);
+			}
+		}
+
+		function forceScrollbarVisible(bar) {
+			if (!bar) { return; }
+			if (bar.classList) {
+				bar.classList.add('visible');
+				bar.classList.remove('invisible');
+			}
+			if (bar.style.opacity !== '1') { bar.style.opacity = '1'; }
+		}
+
+		function removeDrawnPaddle() {
+			if (pongPaddleEl) { try { pongPaddleEl.remove(); } catch (e) {} pongPaddleEl = null; }
+		}
+
+		function findPongScrollbar() {
+			var editorPart = document.getElementById('workbench.parts.editor');
+			var root = editorPart || document;
+			// Only the main editor's scroll container. Its vertical scrollbar
+			// thumb is shorter than the track when the code is scrollable.
+			var scrollables = root.querySelectorAll('.editor-group-container.active .monaco-scrollable-element.editor-scrollable');
+			var i, se, bar, slider, track, thumb;
+			for (i = 0; i < scrollables.length; i++) {
+				se = scrollables[i];
+				bar = se.querySelector('.scrollbar.vertical');
+				slider = bar ? bar.querySelector('.slider') : null;
+				if (!bar || !slider) { continue; }
+				track = bar.getBoundingClientRect();
+				thumb = slider.getBoundingClientRect();
+				if (thumb.height > 0 && thumb.height < track.height - 6) {
+					// The wheel target is the scrollable element's first child
+					// (`.lines-content`), which Monaco listens on for wheel input.
+					return { bar: bar, slider: slider, wheelTarget: se.firstElementChild || se };
+				}
+			}
+			return null;
+		}
+
+		function debugPongScroll() {
+			var out = {
+				activeGroups: document.querySelectorAll('.editor-group-container.active').length,
+				scrollables: [],
+			};
+			var els = document.querySelectorAll('.editor-group-container.active .monaco-scrollable-element');
+			function describe(el) {
+				if (!el) { return null; }
+				var cs = getComputedStyle(el);
+				return {
+					tag: el.tagName,
+					cls: String(typeof el.className === 'string' ? el.className : (el.getAttribute && el.getAttribute('class')) || '').slice(0, 120),
+					scrollH: el.scrollHeight,
+					clientH: el.clientHeight,
+					scrollT: el.scrollTop,
+					overflow: cs.overflowY,
+				};
+			}
+			for (var i = 0; i < els.length && i < 6; i++) {
+				var el = els[i];
+				var vb = el.querySelector('.scrollbar.vertical');
+				out.scrollables.push({
+					cls: String(el.className || '').slice(0, 120),
+					firstChild: describe(el.firstElementChild),
+					linesContent: describe(el.querySelector('.lines-content') || el.querySelector('.view-lines')),
+					hasVBar: !!vb,
+				});
+			}
+			return JSON.stringify(out);
+		}
+
+		function pongFrame() {
+			if (!pongActive) { return; }
+			var t = now();
+			try {
+				pongStep(t);
+			} catch (err) {
+				console.error('[better-pet] pong frame error:', err);
+			}
+			// The loop must never die: reschedule even if a frame threw.
+			if (pongActive) { requestAnimationFrame(pongFrame); }
+		}
+
+		function pongStep(t) {
+			var elapsed = Math.min(THROW_MAX_FRAME_DURATION, Math.max(0, t - pongLastFrameTime));
+			pongLastFrameTime = t;
+			var bounds = overlayRect();
+			var display = displaySize();
+			var floor = floorTop();
+			var m = pongMotion;
+			var dt = elapsed / 1000;
+
+			// Wizard hat: every in-game moment (after a short grace) may teleport
+			// the ball to the left half of the editor, keeping its velocity.
+			if (selectedAccessory === 'wizardHat' && !motionReduced && t - pongStartTime >= WIZARD_TELEPORT_GRACE) {
+				if (Math.random() < 1 - Math.exp(-WIZARD_TELEPORT_CHANCE_PER_SECOND * elapsed / 1000)) {
+					var teleportTop = Math.random() * Math.max(0, floor - display);
+					var teleportLeft = Math.random() * Math.max(0, bounds.width / 2 - display);
+					pongMotion = { left: teleportLeft, top: teleportTop, x: m.x, y: m.y };
+					setThrowPosition(teleportLeft, teleportTop);
+					status('The VS Code pet blinked out and reappeared on the left');
+					return;
+				}
+			}
+
+			var left = m.left + m.x * dt;
+			var top = m.top + m.y * dt;
+
+			// Top and bottom walls.
+			if (top < 0) { top = 0; m.y = Math.abs(m.y); }
+			else if (top + display > floor) { top = floor - display; m.y = -Math.abs(m.y); }
+			// Left wall.
+			if (left < 0) { left = 0; m.x = Math.abs(m.x); }
+
+			// Paddle: the ball bounces back left when its right edge reaches the
+			// scrollbar and its center is inside the thumb's span.
+			updatePongPaddle();
+			var ballCenterY = top + display / 2;
+			var ballRight = left + display;
+			if (m.x > 0 && ballRight >= pongPaddleLeftX && left <= bounds.width) {
+				var withinPaddle = pongPaddleFullHeight || (ballCenterY >= pongPaddleTop && ballCenterY <= pongPaddleBottom);
+				if (withinPaddle) {
+					var paddleCenter = pongPaddleFullHeight ? floor / 2 : (pongPaddleTop + pongPaddleBottom) / 2;
+					var paddleHalf = pongPaddleFullHeight ? floor / 2 : (pongPaddleBottom - pongPaddleTop) / 2;
+					var rel = clamp((ballCenterY - paddleCenter) / (paddleHalf || 1), -1, 1);
+					var angle = rel * PONG_PADDLE_MAX_ANGLE * Math.PI / 180;
+					var speed = Math.max(PONG_BALL_SPEED, Math.hypot(m.x, m.y));
+					m.x = -Math.abs(Math.cos(angle) * speed);
+					m.y = Math.sin(angle) * speed;
+					left = pongPaddleLeftX - display;
+					pongScore++;
+					updatePongScore();
+					status('VS Code pet pong: ' + pongScore + (pongScore === 1 ? ' hit' : ' hits'));
+				}
+			}
+
+			// Missed: the ball slipped past the right wall without hitting the
+			// paddle. Game over; the pet falls back to rest against the wall.
+			if (left > bounds.width) {
+				endPong();
+				return;
+			}
+
+			pongMotion = { left: left, top: top, x: m.x, y: m.y };
+			setThrowPosition(left, top);
+			pongRotation = (pongRotation + elapsed * 0.45) % 360;
+			button.style.transform = 'rotate(' + pongRotation + 'deg)';
+		}
+
+		function endPong() {
+			if (!pongActive) { return; }
+			pongActive = false;
+			pongAnimationId++;
+			button.classList.remove('throwing');
+			button.style.transform = '';
+			removeDrawnPaddle();
+			pongScore = 0;
+			bounceCounter.textContent = '';
+			bounceCounter.classList.add('hidden');
+			// Wizard-hat invisibility is pong-only on April Fools'; clear it when
+			// the game ends.
+			setWizardInvisible(false);
+			clearTimeout(wizardInvisibleTimer);
+			wizardInvisibleTimer = null;
+			setGravityPose(aprilFools);
+			beginFall(0);
+		}
+
 		/* --- fall / throw ----------------------------------------------------------- */
 		function beginFall(mouseBounceDelay) {
 			var top = parseFloat(button.style.top) || getMaximumTop();
 			var target = getFallTarget();
+			// April Fools' gravity points right, so the pet keeps its feet toward
+			// the right wall while it falls (slides) back there.
+			setGravityPose(aprilFools);
+			// For right gravity the pet also slides horizontally to the right wall.
+			var fallLeftStart = NaN;
+			var fallLeftTarget = NaN;
+			if (aprilFools) {
+				var hb = getHorizontalBounds();
+				var parsedLeft = parseFloat(button.style.left);
+				if (Number.isFinite(parsedLeft)) {
+					fallLeftStart = parsedLeft;
+				} else {
+					var ov2 = overlayRect();
+					var bb2 = button.getBoundingClientRect();
+					fallLeftStart = bb2.left - ov2.left;
+				}
+				fallLeftTarget = hb ? hb.maximumLeft : fallLeftStart;
+				// Keep the current vertical position as the resting spot (the pet
+				// falls horizontally to the wall, not vertically to a corner).
+				var parsedTop = parseFloat(button.style.top);
+				if (Number.isFinite(parsedTop)) { baseTop = parsedTop; }
+				verticalAnchor = undefined;
+				hasCustomPosition = true;
+			}
 			resetBounceCount();
 			cursorSamples = [];
 			mouseBounceAvailableAt = now() + (mouseBounceDelay || 0);
@@ -2221,21 +2983,54 @@
 			renderState('falling', true);
 			var bounds = button.getBoundingClientRect();
 			cursorContactingPet = cursorPosition !== undefined && isChatPetMouseContact(cursorPosition[0], cursorPosition[1], bounds);
-			button.style.transitionDuration = getChatPetFallDuration(target.top - top) + 'ms';
+			var verticalDistance = Math.abs(target.top - top);
+			var fallDuration = getChatPetFallDuration(verticalDistance);
+			if (aprilFools) {
+				// The slide to the right wall is a horizontal CSS transition; make
+				// sure its duration matches the vertical fall so the pet lands in
+				// the bottom-right corner in one motion.
+				var horizontalDistance = Math.abs(fallLeftTarget - fallLeftStart);
+				fallDuration = Math.max(fallDuration, getChatPetFallDuration(horizontalDistance));
+				button.style.transitionProperty = 'left, top';
+				button.style.left = fallLeftTarget + 'px';
+			} else {
+				button.style.transitionProperty = '';
+			}
+			button.style.transitionDuration = fallDuration + 'ms';
 			void button.getBoundingClientRect();
 			button.classList.add('falling');
 			button.style.top = target.top + 'px';
-			if (motionReduced || Math.abs(target.top - top) <= POSITION_EPSILON) { finishFall(); }
+			if (motionReduced || (verticalDistance <= POSITION_EPSILON && (!aprilFools || horizontalDistance <= POSITION_EPSILON))) { finishFall(); return; }
+			// Watchdog: `transitionend`/`transitioncancel` can be dropped (occluded
+			// window, interrupted compositor, a style write that cancels the run).
+			// Never leave the pet stuck showing the airborne sprite and bouncing
+			// on hover — force the landing after the transition duration.
+			clearTimeout(fallWatchdogTimer);
+			fallWatchdogTimer = setTimeout(function () {
+				fallWatchdogTimer = null;
+				finishFall();
+			}, fallDuration + 80);
 		}
 
 		function finishFall() {
+			clearTimeout(fallWatchdogTimer);
+			fallWatchdogTimer = null;
 			if (!button.classList.contains('falling')) { return; }
 			button.classList.remove('falling');
 			button.style.transitionDuration = '';
+			button.style.transitionProperty = '';
 			completeFall(true);
 		}
 
-		function beginThrow(velocity, preserveBounceCount, mouseBounceDelay, startWithBounceImpact) {
+		function beginThrow(velocity, preserveBounceCount, mouseBounceDelay, startWithBounceImpact, propellerLift) {
+			// April Fools' has no mouse throw (pong replaces it); ignore any
+			// throw request from accessory features or mouse bounces.
+			if (aprilFools) { return; }
+			clearTimeout(fallWatchdogTimer);
+			fallWatchdogTimer = null;
+			// A normal throw is right-side-up even on April Fools' (only the
+			// right-wall rest and pong's pre-game pose use the rotated pose).
+			setGravityPose(false);
 			var geometry = getThrowGeometry();
 			var buttonBounds = button.getBoundingClientRect();
 			var motion = {
@@ -2249,8 +3044,19 @@
 			var bounceImpactEndsAt;
 			var startTime = now();
 			var lastFrameTime = startTime;
-
-			if (!preserveBounceCount) { resetBounceCount(); }
+			// Spinner-hat "bamboo copter" mode: only when thrown upward.
+			var spinner = !propellerLift && !motionReduced && selectedAccessory === 'spinnerHat' && velocity.y < 0;
+			// Propeller hat, thrown by the mouse: same bamboo-copter behavior as
+			// the spinner hat, but with its own drag/glide tuning.
+			var propellerThrow = !propellerLift && !motionReduced && selectedAccessory === 'propellerHat' && velocity.y < 0;
+			var spinnerFlipAccumulator = 0;
+			// Propeller-hat "helicopter" lift: an explicit gentle float triggered
+			// by rapid facing switches on the ground.
+			var propeller = !!propellerLift && !motionReduced;
+			var propellerSpinElapsed = 0;
+			var propellerFlipAccumulator = 0;
+			// Wizard hat: every airborne moment has a chance to teleport to the
+			// upper half of the editor area (velocity vector is preserved).
 			cursorSamples = [];
 			mouseBounceAvailableAt = startTime + (mouseBounceDelay || 0);
 			button.classList.remove('falling');
@@ -2332,16 +3138,44 @@
 
 				var elapsed = Math.min(THROW_MAX_FRAME_DURATION, Math.max(0, t - lastFrameTime));
 				lastFrameTime = t;
+				// Wizard hat: every airborne moment (after a short grace) may
+				// teleport the pet to the upper half, keeping its velocity.
+				if (!motionReduced && selectedAccessory === 'wizardHat' && t - startTime >= WIZARD_TELEPORT_GRACE) {
+					if (Math.random() < 1 - Math.exp(-WIZARD_TELEPORT_CHANCE_PER_SECOND * elapsed / 1000)) {
+						var b = geometry.bounds;
+						var display = geometry.displaySize;
+						var halfTop = Math.max(b.minimumTop, (geometry.floorTop - display) / 2);
+						var teleportTop = b.minimumTop + Math.random() * Math.max(0, halfTop - b.minimumTop);
+						var teleportLeft = b.minimumLeft + Math.random() * Math.max(0, b.maximumLeft - b.minimumLeft);
+						motion = { left: teleportLeft, top: teleportTop, x: motion.x, y: motion.y };
+						setThrowPosition(motion.left, motion.top);
+						status('The VS Code pet blinked out and reappeared up high');
+						requestAnimationFrame(updateFrame);
+						return;
+					}
+				}
 				var previousMotion = motion;
-				var step = advanceChatPetThrow(previousMotion, elapsed, geometry.bounds);
+				// Spinner/propeller modes use drag while rising and a slow glide
+				// while falling; a normal throw always uses standard gravity.
+				var gravity;
+				if (propeller) {
+					gravity = motion.y < 0 ? PROPELLER_ASCENT_DECELERATION : PROPELLER_DESCENT_GRAVITY;
+				} else if (spinner) {
+					gravity = motion.y < 0 ? SPINNER_ASCENT_GRAVITY : SPINNER_DESCENT_GRAVITY;
+				} else if (propellerThrow) {
+					gravity = motion.y < 0 ? PROPELLER_THROW_ASCENT_GRAVITY : PROPELLER_THROW_DESCENT_GRAVITY;
+				} else {
+					gravity = THROW_GRAVITY;
+				}
+				var step = advanceChatPetThrow(previousMotion, elapsed, geometry.bounds, gravity);
 				var platformTop = geometry.platformTop;
 				var landing = getChatPetThrowLanding(previousMotion.left, previousMotion.top, step.left, step.top, geometry.displaySize, geometry.displaySize, geometry.platformLeft, geometry.platformRight, platformTop, geometry.floorTop);
 				var landingTime = landing && step.top !== previousMotion.top ? (landing.top - previousMotion.top) / (step.top - previousMotion.top) : undefined;
 				var cursorPos = cursorPosition;
-				var mouseCollisionTime = (t >= mouseBounceAvailableAt) && mouseBounceArmed && !cursorContactingPet && cursorPos
+				var mouseCollisionTime = !spinner && !propeller && !propellerThrow && (t >= mouseBounceAvailableAt) && mouseBounceArmed && !cursorContactingPet && cursorPos
 					? getChatPetMouseCollisionTime(geometry.overlayLeft + previousMotion.left, geometry.overlayTop + previousMotion.top, geometry.overlayLeft + step.left, geometry.overlayTop + step.top, geometry.displaySize, geometry.displaySize, cursorPos[0], cursorPos[1])
 					: undefined;
-				if (cursorPos && mouseCollisionTime !== undefined && (landingTime === undefined || mouseCollisionTime < landingTime)) {
+				if (!spinner && !propeller && !propellerThrow && cursorPos && mouseCollisionTime !== undefined && (landingTime === undefined || mouseCollisionTime < landingTime)) {
 					motion = advanceChatPetThrow(previousMotion, elapsed * mouseCollisionTime, geometry.bounds);
 					rotation = getChatPetThrowRotation(rotation, motion.left - previousMotion.left, motion.y, elapsed * mouseCollisionTime);
 					setThrowPosition(motion.left, motion.top);
@@ -2352,7 +3186,34 @@
 					}
 				}
 				motion = step;
-				rotation = getChatPetThrowRotation(rotation, motion.left - previousMotion.left, motion.y, elapsed);
+				if (propeller) {
+					// Helicopter lift: the propeller starts spinning fast, then
+					// winds down as it rises, so the flip rate decays over time.
+					propellerSpinElapsed += elapsed;
+					var spinProgress = Math.min(1, propellerSpinElapsed / PROPELLER_SPIN_DECAY_TIME);
+					var flipInterval = PROPELLER_FLIP_INTERVAL_START + (PROPELLER_FLIP_INTERVAL_END - PROPELLER_FLIP_INTERVAL_START) * spinProgress;
+					propellerFlipAccumulator += elapsed;
+					while (propellerFlipAccumulator >= flipInterval) {
+						propellerFlipAccumulator -= flipInterval;
+						setFacingDirection(facingController.direction() === 'left' ? 'right' : 'left');
+					}
+				} else if (spinner || propellerThrow) {
+					// Bamboo copter: no spin while rising (the pet hangs head-down
+					// below the propeller); on the way down the body "spins" around
+					// the vertical axis by rapidly swapping the left/right sprite.
+					if (motion.y < 0) {
+						spinnerFlipAccumulator = 0;
+					} else {
+						var flipInterval = propellerThrow ? PROPELLER_THROW_FLIP_INTERVAL : SPINNER_FLIP_INTERVAL;
+						spinnerFlipAccumulator += elapsed;
+						while (spinnerFlipAccumulator >= flipInterval) {
+							spinnerFlipAccumulator -= flipInterval;
+							setFacingDirection(facingController.direction() === 'left' ? 'right' : 'left');
+						}
+					}
+				} else {
+					rotation = getChatPetThrowRotation(rotation, motion.left - previousMotion.left, motion.y, elapsed);
+				}
 				setThrowPosition(motion.left, motion.top);
 				if (motion.y >= 0 && landing) {
 					motion = { left: landing.left, top: landing.top, x: motion.x, y: motion.y };
@@ -2370,7 +3231,16 @@
 					requestAnimationFrame(updateFrame);
 					return;
 				}
-				button.style.transform = 'rotate(' + rotation + 'deg)';
+				if (propeller) {
+					// Helicopter lift: body stays upright the whole flight.
+					button.style.transform = '';
+				} else if (spinner || propellerThrow) {
+					button.style.transform = motion.y < 0
+						? 'rotate(' + SPINNER_ASCENT_ROTATION + 'deg)'
+						: '';
+				} else {
+					button.style.transform = 'rotate(' + rotation + 'deg)';
+				}
 				requestAnimationFrame(updateFrame);
 			}
 			requestAnimationFrame(updateFrame);
@@ -2378,6 +3248,8 @@
 
 		function finishThrow(announce, target) {
 			if (!button.classList.contains('throwing')) { return; }
+			clearTimeout(fallWatchdogTimer);
+			fallWatchdogTimer = null;
 			var resolvedTarget = target || getThrowSettleTarget();
 			throwBounceHandler = undefined;
 			throwWallImpact = undefined;
@@ -2393,11 +3265,16 @@
 		}
 
 		function completeFall(announce) {
-			// In the editor overlay the pet always lands on the bottom surface.
-			var left = getCurrentLeft();
-			if (hasCustomPosition) { setHorizontalPosition(left, false); }
-			else { setDefaultHorizontalPosition(); }
-			updateVerticalPosition();
+			// In the editor overlay the pet always lands on the bottom surface
+			// (or, on April Fools', against the right wall).
+			if (aprilFools) {
+				placeGravityRest();
+			} else {
+				var left = getCurrentLeft();
+				if (hasCustomPosition) { setHorizontalPosition(left, false); }
+				else { setDefaultHorizontalPosition(); }
+				updateVerticalPosition();
+			}
 			updateBounceCounterPosition();
 			if (announce) {
 				showTransientState('splat');
@@ -2417,7 +3294,7 @@
 		}
 
 		function bounceAirbornePet(pointerX, pointerVelocity, requireDescending, collisionMotion) {
-			if (!enabled || motionReduced) { return false; }
+			if (!enabled || motionReduced || aprilFools) { return false; }
 			var bounced = false;
 			if (button.classList.contains('throwing')) {
 				bounced = throwBounceHandler ? throwBounceHandler(pointerX, pointerVelocity, requireDescending, collisionMotion) : false;
@@ -2494,7 +3371,7 @@
 
 		/* --- bounce counter / confetti ------------------------------------------- */
 		function updateBounceCounterPosition() {
-			if (bounceCount === 0) { return; }
+			if (bounceCount === 0 && pongScore === 0) { return; }
 			var left = parseFloat(button.style.left);
 			var top = parseFloat(button.style.top);
 			if (!Number.isFinite(left) || !Number.isFinite(top)) { return; }
@@ -2544,6 +3421,8 @@
 		function switchAccessory(accessory) {
 			selectedAccessory = accessory;
 			storageSet('accessory', accessory || '');
+			if (accessory !== 'wizardHat' && wizardInvisible) { setWizardInvisible(false); }
+			scheduleWizardInvisibility();
 			// Simplest correct approach: re-render the current state so the
 			// accessory is picked up by the composite renderer.
 			if (activeSprite) {
@@ -2587,7 +3466,9 @@
 				return;
 			}
 			if (onTheRun) {
+				manualRun = false;
 				cursorRun = false;
+				suggestRun = false;
 				setOnTheRun(false);
 				return;
 			}
@@ -2597,7 +3478,7 @@
 				status('The VS Code pet woke up');
 				return;
 			}
-			var interaction = getChatPetClickInteraction(Math.random(), lastClickInteraction);
+			var interaction = getChatPetClickInteraction(Math.random(), lastClickInteraction, selectedAccessory === 'pinkPartyHat' || selectedAccessory === 'partyHat');
 			lastClickInteraction = interaction;
 			showTransientState(interaction);
 			var messages = {
@@ -2627,6 +3508,9 @@
 		/* --- context menu (native VS Code menu via the overlay bridge) ------------ */
 		function runMenuAction(id) {
 			if (id === 'onTheRun') {
+				manualRun = true;
+				cursorRun = false;
+				suggestRun = false;
 				setOnTheRun(true);
 				status('The VS Code pet went on the run');
 			} else if (id === 'grow') {
@@ -2685,7 +3569,7 @@
 			var newVariant = getChatPetColorVariant(value);
 			var variantChanged = newVariant !== variant;
 			variant = newVariant;
-			eyes.style.color = getChatPetEyeColor(value);
+			applyEyeColor();
 			if (variantChanged) {
 				// Re-render with the new variant's sprites.
 				renderState(renderedState || 'idle', true, isDragging);
@@ -2693,6 +3577,45 @@
 				if (activeSprite && activeSprite.redrawFrame) { activeSprite.redrawFrame(); }
 			}
 			status('VS Code pet color changed');
+		}
+
+		/* --- eye color: orange for the Halloween ghost, normal otherwise -------- */
+		function applyEyeColor() {
+			eyes.style.color = halloweenGhost ? WIZARD_EYE_COLOR : getChatPetEyeColor(color);
+		}
+
+		function setWizardInvisible(on) {
+			if (on && halloweenGhost) { return; }
+			if (wizardInvisible === on) { return; }
+			wizardInvisible = on;
+			clearTimeout(wizardInvisibleEndTimer);
+			wizardInvisibleEndTimer = null;
+			applyEyeColor();
+			if (activeSprite && activeSprite.redrawFrame) { activeSprite.redrawFrame(); }
+			if (on) {
+				wizardInvisibleEndTimer = setTimeout(function () {
+					wizardInvisibleEndTimer = null;
+					setWizardInvisible(false);
+					scheduleWizardInvisibility();
+				}, WIZARD_INVISIBLE_DURATION);
+			}
+		}
+
+		function scheduleWizardInvisibility() {
+			clearTimeout(wizardInvisibleTimer);
+			wizardInvisibleTimer = null;
+			if (selectedAccessory !== 'wizardHat') { return; }
+			if (halloweenGhost) { return; }
+			// No hat special features on April Fools', except inside a pong game
+			// (where the wizard hat keeps its invisibility).
+			if (aprilFools && !pongActive) { return; }
+			var delay = WIZARD_INVISIBLE_MIN_INTERVAL + Math.random() * (WIZARD_INVISIBLE_MAX_INTERVAL - WIZARD_INVISIBLE_MIN_INTERVAL);
+			wizardInvisibleTimer = setTimeout(function () {
+				wizardInvisibleTimer = null;
+				// Don't vanish mid-nap; try again later.
+				if (renderedState === 'sleep' || onTheRun) { scheduleWizardInvisibility(); return; }
+				setWizardInvisible(true);
+			}, delay);
 		}
 
 		/* --- animation end handling (yapping fall → mouth open) --------------------- */
@@ -2712,12 +3635,12 @@
 			}
 		});
 		button.addEventListener('transitionend', function (event) {
-			if (event.target === button && event.propertyName === 'top' && button.classList.contains('falling')) {
+			if (event.target === button && (event.propertyName === 'top' || event.propertyName === 'left') && button.classList.contains('falling')) {
 				finishFall();
 			}
 		});
 		button.addEventListener('transitioncancel', function (event) {
-			if (event.target === button && event.propertyName === 'top' && button.classList.contains('falling')) {
+			if (event.target === button && (event.propertyName === 'top' || event.propertyName === 'left') && button.classList.contains('falling')) {
 				finishFall();
 			}
 		});
@@ -2727,12 +3650,12 @@
 		button.addEventListener('click', onButtonClick);
 		button.addEventListener('contextmenu', showContextMenu);
 
-		document.addEventListener('pointermove', function (event) {
+		__on(document, 'pointermove', function (event) {
 			trackCursor(event);
 			if (enabled && doesChatPetStateTrackCursor(renderedState)) { updateGaze(); }
 		});
 
-		window.addEventListener('resize', function () {
+		__on(window, 'resize', function () {
 			if (!isDragging && !isAirborne()) { updateRestingPosition(); }
 		});
 
@@ -2746,9 +3669,11 @@
 			};
 			var hostObserver = new ResizeObserver(relayout);
 			hostObserver.observe(root);
+			__observers.push(hostObserver);
 			if (root.parentElement) {
 				var partObserver = new ResizeObserver(relayout);
 				partObserver.observe(root.parentElement);
+				__observers.push(partObserver);
 			}
 		}
 
@@ -2761,15 +3686,15 @@
 		}
 		applyReducedMotion();
 		if (reducedMotionQuery && reducedMotionQuery.addEventListener) {
-			reducedMotionQuery.addEventListener('change', applyReducedMotion);
+			__on(reducedMotionQuery, 'change', applyReducedMotion);
 		}
 
-		document.addEventListener('visibilitychange', function () {
+		__on(document, 'visibilitychange', function () {
 			if (!document.hidden) { updateEyes(renderedState); }
 		});
 
 		// Typing while coding → the pet types along.
-		document.addEventListener('keydown', function (event) {
+		__on(document, 'keydown', function (event) {
 			if (enabled && isTypingKey(event)) {
 				setTypingActive(true);
 			}
@@ -2783,6 +3708,18 @@
 				wake();
 				showTransientState('clapping');
 				status('The VS Code pet is applauding the completed task');
+			} else if (detail === 'grow' || detail === 'shrink') {
+				runMenuAction(detail);
+			} else if (detail === 'randomizePosition') {
+				// Reappear at a random spot on each show (along the floor, or
+				// along the right wall on April Fools'); a hidden pet may have
+				// been left on the run, so clear that state first.
+				manualRun = false;
+				cursorRun = false;
+				suggestRun = false;
+				setOnTheRun(false);
+				if (aprilFools) { randomizeGravityRest(); }
+				else { randomizeHorizontalPosition(); updateVerticalPosition(); }
 			}
 		});
 
@@ -2818,6 +3755,40 @@
 		function petGroundedCenter() {
 			var size = displaySize();
 			return { x: baseLeft + size / 2, y: floorTop() - size / 2 };
+		}
+
+		// The rect the pet occupies when resting on the floor (viewport coords),
+		// independent of its current transform — used to test whether the pet
+		// would cover the IntelliSense suggest widget even while on the run.
+		function restingPetRect() {
+			var b = overlayRect();
+			var size = displaySize();
+			var top = floorTop() - size;
+			return {
+				left: b.left + baseLeft,
+				top: b.top + top,
+				right: b.left + baseLeft + size,
+				bottom: b.top + top + size,
+			};
+		}
+
+		function rectsOverlap(a, b) {
+			return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+		}
+
+		function isBlockingSuggestWidget() {
+			var pet = restingPetRect();
+			var editorPart = document.getElementById('workbench.parts.editor');
+			var nodes = document.querySelectorAll('.monaco-editor .suggest-widget, .monaco-editor .suggest-details');
+			for (var i = 0; i < nodes.length; i++) {
+				var el = nodes[i];
+				if (editorPart && !editorPart.contains(el)) { continue; }
+				var cs = getComputedStyle(el);
+				if (cs.visibility === 'hidden' || cs.display === 'none') { continue; }
+				var r = el.getBoundingClientRect();
+				if (r.width > 0 && r.height > 0 && rectsOverlap(pet, r)) { return true; }
+			}
+			return false;
 		}
 
 		/**
@@ -2900,13 +3871,35 @@
 		/**
 		 * Grounded caret-avoidance controller. Runs on a low-frequency timer
 		 * (the caret only moves on user input) and decides, in order: recover
-		 * from an automatic run, hop away, or go on the run when cornered.
+		 * from an automatic run, hop away, or go on the run when cornered. It
+		 * also tucks the pet away while it would cover the IntelliSense suggest
+		 * widget.
 		 */
 		function applyCursorAvoidance() {
 			function tick() {
 				avoidanceTimer = setTimeout(tick, HOP_AVOID_INTERVAL);
 				if (document.hidden || !enabled) { return; }
-				if (isDragging || isAirborne()) { return; }
+				if (isDragging) { return; }
+				// April Fools' pins the pet to the right wall; caret avoidance
+				// doesn't apply.
+				if (aprilFools) { return; }
+
+				// Suggest-widget avoidance: if the resting pet would cover the
+				// IntelliSense suggest widget, go on the run until it no longer
+				// overlaps (or the widget disappears). On-the-run tucks the pet
+				// below the editor edge, so it can't block the widget. A manual
+				// run (user choice) is never auto-restored.
+				if (!isAirborne() && !manualRun && isBlockingSuggestWidget()) {
+					if (!onTheRun) { setOnTheRun(true); }
+					suggestRun = true;
+					return;
+				}
+				if (suggestRun) {
+					suggestRun = false;
+					if (!cursorRun && !manualRun) { setOnTheRun(false); }
+				}
+
+				if (isAirborne()) { return; }
 				if (transientState === 'dizzy') {
 					// Dizzy: pause avoidance and cancel any in-flight hop until
 					// the pet recovers.
@@ -2919,11 +3912,12 @@
 				var caret = caretCenter();
 
 				if (onTheRun) {
-					if (cursorRun && caret) {
+					if (manualRun) { return; }
+					if (cursorRun) {
 						var pet = petGroundedCenter();
-						if (Math.hypot(caret.x - pet.x, caret.y - pet.y) >= CURSOR_CLEAR_DISTANCE) {
+						if (!caret || Math.hypot(caret.x - pet.x, caret.y - pet.y) >= CURSOR_CLEAR_DISTANCE) {
 							cursorRun = false;
-							setOnTheRun(false);
+							if (!suggestRun) { setOnTheRun(false); }
 						}
 					}
 					return;
@@ -2964,14 +3958,17 @@
 		}
 
 		/* --- boot ---------------------------------------------------------------------- */
+		// April Fools': rest against the right wall from the first frame.
+		setGravityPose(aprilFools);
 		setScale(scale);
-		restoreHorizontalPosition();
-		updateVerticalPosition();
+		if (aprilFools) { randomizeGravityRest(); }
+		else { randomizeHorizontalPosition(); updateVerticalPosition(); }
 		button.classList.add('entering');
 		renderLoop();
 		scheduleIdle();
 		updateGaze();
 		applyCursorAvoidance();
+		scheduleWizardInvisibility();
 		setTimeout(function () { button.classList.remove('entering'); }, 320);
 
 		// Native-menu action dispatcher (called by the overlay bridge).
@@ -2984,6 +3981,7 @@
 			setAccessory: switchAccessory,
 			setScale: setScale,
 			setOnTheRun: setOnTheRun,
+			debugPongScroll: debugPongScroll,
 			notify: function (type) {
 				if (type === 'clapping') { wake(); showTransientState('clapping'); }
 				else if (type === 'typing') { setTypingActive(true); }
@@ -2993,7 +3991,7 @@
 				var caret = caretCenter();
 				var center = petGroundedCenter();
 				var distance = caret && center ? Math.hypot(caret.x - center.x, caret.y - center.y) : Infinity;
-				return JSON.stringify({ baseLeft: baseLeft, caret: caret, center: center, distance: Math.round(distance), clearDistance: CURSOR_CLEAR_DISTANCE, onTheRun: onTheRun, cursorRun: cursorRun, airborne: isAirborne(), dragging: isDragging, enabled: enabled });
+				return JSON.stringify({ baseLeft: baseLeft, caret: caret, center: center, distance: Math.round(distance), clearDistance: CURSOR_CLEAR_DISTANCE, onTheRun: onTheRun, cursorRun: cursorRun, suggestRun: suggestRun, manualRun: manualRun, blockingSuggest: isBlockingSuggestWidget(), airborne: isAirborne(), dragging: isDragging, enabled: enabled });
 			},
 			debugGeometry: function () {
 				var part = ROOT.parentElement;
@@ -3014,14 +4012,58 @@
 					displaySize: displaySize(),
 				});
 			},
+			debugRender: function () {
+				function imgState(img) {
+					if (!img) { return null; }
+					var src = img.getAttribute('src') || '';
+					return { srcLen: src.length, srcHead: src.slice(0, 32), complete: !!img.complete, nw: img.naturalWidth, nh: img.naturalHeight };
+				}
+				return JSON.stringify({
+					renderedState: renderedState,
+					halloweenGhost: !!halloweenGhost,
+					wizardInvisible: !!wizardInvisible,
+					motionReduced: !!motionReduced,
+					selectedAccessory: selectedAccessory || null,
+					color: color,
+					variant: variant,
+					aprilFools: !!aprilFools,
+					pongActive: !!pongActive,
+					pongScore: pongScore,
+					pongPaddleMode: pongPaddleMode,
+					pongScroll: (function () { try { return JSON.parse(debugPongScroll()); } catch (e) { return null; } })(),
+					spriteCount: Object.keys(SPRITES).length,
+					accessoryCount: Object.keys(ACCESSORY_ATLASES).length,
+					pendingRender: pendingRender ? { urlHead: (pendingRender.bodySource && pendingRender.bodySource.url || '').slice(0, 40), state: pendingRender.state } : null,
+					activeSprite: activeSprite ? imgState(activeSprite.image) : null,
+					sprite0: imgState(sprites[0] ? sprites[0].image : null),
+					sprite1: imgState(sprites[1] ? sprites[1].image : null),
+				});
+			},
 		};
 	}
 
 	/* Boot */
 	try {
+		// Defensive singleton: if a previous engine instance (e.g. one left
+		// behind by an extension-host restart) still has its host in the editor
+		// container, remove it so only this instance's host remains.
+		try {
+			var __hostContainer = ROOT.parentElement;
+			if (__hostContainer && typeof __hostContainer.querySelectorAll === 'function') {
+				var __siblings = __hostContainer.querySelectorAll('.better-pet-host');
+				for (var __si = 0; __si < __siblings.length; __si++) {
+					if (__siblings[__si] !== ROOT) {
+						try { __siblings[__si].remove(); } catch (__se) {}
+					}
+				}
+			}
+		} catch (__se2) {}
+		console.log('[better-pet] boot, sprites=' + Object.keys(SPRITES).length + ', accessories=' + Object.keys(ACCESSORY_ATLASES).length + ', hostAttached=' + !!ROOT.parentElement);
 		new ChatPet(ROOT);
+		window.__BETTER_PET_DISPOSE__ = __disposeEngine;
 		window.__BETTER_PET_STATUS__ = 'ran';
 	} catch (err) {
+		console.error('[better-pet] boot ERROR: ' + (err && (err.stack || err.message)));
 		window.__BETTER_PET_STATUS__ = 'error: ' + (err && err.message);
 	}
 })();

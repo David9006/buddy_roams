@@ -118,12 +118,28 @@ export class Pet {
 		if (!this.rendered) {
 			this.rendered = true;
 			void this.loadAndRender();
+		} else {
+			// Engine is already running; drop the pet at a fresh random spot
+			// every time it is shown again.
+			this.randomizePosition();
 		}
 	}
 
 	stop(): void {
 		this.overlay?.hide();
 		this.started = false;
+	}
+
+	grow(): void {
+		void this.overlay?.notify('grow');
+	}
+
+	shrink(): void {
+		void this.overlay?.notify('shrink');
+	}
+
+	randomizePosition(): void {
+		void this.overlay?.notify('randomizePosition');
 	}
 
 	isStarted(): boolean {

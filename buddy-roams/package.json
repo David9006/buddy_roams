@@ -1,7 +1,7 @@
 {
   "name": "buddy-roams",
   "displayName": "Buddy Roams",
-  "description": "Brings a roaming pet into the editor area using the patched `window.createEditorOverlay` API.",
+  "description": "Brings the VS Code Buddy into the editor area.",
   "icon": "icon.png",
   "extensionKind": [
     "ui"
@@ -11,7 +11,7 @@
     "buddy",
     "chat"
   ],
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "Gapple",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
@@ -19,9 +19,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/David9006/buddy_unleashed.git"
+    "url": "https://github.com/David9006/buddy_roams.git"
   },
-  "homepage": "https://github.com/David9006/buddy_unleashed/blob/main/README.md",
+  "homepage": "https://github.com/David9006/buddy_roams/blob/main/README.md",
   "categories": [
     "Other"
   ],
@@ -50,6 +50,16 @@
         "command": "buddy-roams.diagnose",
         "title": "Diagnose",
         "category": "Buddy Roams"
+      },
+      {
+        "command": "buddy-roams.grow",
+        "title": "Grow",
+        "category": "Buddy Roams"
+      },
+      {
+        "command": "buddy-roams.shrink",
+        "title": "Shrink",
+        "category": "Buddy Roams"
       }
     ],
     "keybindings": [
@@ -58,6 +68,14 @@
         "key": "alt+cmd+p",
         "mac": "alt+cmd+p",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "buddy-roams.grow",
+        "key": "ctrl+alt+="
+      },
+      {
+        "command": "buddy-roams.shrink",
+        "key": "ctrl+alt+-"
       }
     ],
     "configuration": {
