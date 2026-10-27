@@ -193,10 +193,11 @@ mod win32 {
 	use std::sync::{Mutex, OnceLock};
 
 	use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-	use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+	use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+	use windows::Win32::Graphics::Gdi::ScreenToClient;
 	use windows::Win32::UI::WindowsAndMessaging::{
-		CallWindowProcW, DefWindowProcW, GetWindowLongPtrW, ScreenToClient, SetWindowLongPtrW,
-		GWLP_WNDPROC, HTCLIENT, HTTRANSPARENT, POINT, WM_NCHITTEST,
+		DefWindowProcW, GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, HTCLIENT,
+		HTTRANSPARENT, WM_NCHITTEST,
 	};
 
 	static ORIG_PROC: OnceLock<usize> = OnceLock::new();
