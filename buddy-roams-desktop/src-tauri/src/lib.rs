@@ -192,7 +192,7 @@ fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 mod win32 {
 	use std::collections::HashMap;
 	use std::sync::atomic::{AtomicIsize, Ordering};
-	use std::sync::Mutex;
+	use std::sync::{LazyLock, Mutex};
 	use std::time::{Duration, Instant};
 
 	use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -205,7 +205,8 @@ mod win32 {
 
 	/// Original window procedures, keyed by HWND (as isize), so non-hit-test
 	/// messages are forwarded to the right window's original proc.
-	static ORIG_PROCS: Mutex<HashMap<isize, usize>> = Mutex::new(HashMap::new());
+	static ORIG_PROCS: LazyLock<Mutex<HashMap<isize, usize>>> =
+		LazyLock::new(|| Mutex::new(HashMap::new()));
 	/// Top-level overlay window handle.
 	static TOP_HWND: AtomicIsize = AtomicIsize::new(0);
 	/// Serializes child-window enumeration (may run from multiple threads).
