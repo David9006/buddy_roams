@@ -530,7 +530,7 @@ fn scale_nearest(img: &Image, w: u32, h: u32) -> Image {
 /// sampling into a tight bounding box.
 fn rotate(img: &Image, angle: f64) -> Image {
     let rad = angle.to_radians();
-    let (sin, cos) = rad.sin().abs(), rad.cos().abs();
+    let (sin, cos) = (rad.sin().abs(), rad.cos().abs());
     let w = img.width as f64;
     let h = img.height as f64;
     let nw = (h * sin + w * cos).ceil() as u32;
@@ -702,7 +702,7 @@ fn composite_frame(
     let pose_col = pose_column(rf.pose);
     let tinted = match body_color(color) {
         Some(c) => tint(body, c),
-        None => body.clone(),
+        None => (*body).clone(),
     };
     let src_x = (frame as u32 * fw).min(body.width.saturating_sub(fw));
 
@@ -995,17 +995,7 @@ impl Pet {
         }
     }
 
-    fn rendered_state(&self) -> State {
-        if self.dragging {
-            State::Idle
-        } else if let Some((s, _)) = self.transient {
-            s
-        } else {
-            self.base_state
-        }
-    }
-
-    fn render(&mut self, now: u64, cursor: Option<(f64, f64)>) -> Option<(Image, i64, i64)> {
+    pub fn render(&mut self, now: u64, cursor: Option<(f64, f64)>) -> Option<(Image, i64, i64)> {
         if self.on_the_run {
             return None;
         }
@@ -1053,9 +1043,12 @@ impl Pet {
         })?;
 
         let skip_body = self.halloween || now < self.wizard_invisible_until;
-        let acc = self.accessory.as_deref().and_then(accessory_by_id).and_then(|a| {
-            asset(&format!("{}.png", a.atlas)).map(|img| (img, a))
-        });
+        let acc_def = self.accessory.as_deref().and_then(accessory_by_id);
+        let acc_atlas = acc_def.and_then(|a| asset(&format!("{}.png", a.atlas)));
+        let acc = match (&acc_def, &acc_atlas) {
+            (Some(a), Some(img)) => Some((img as &Image, *a)),
+            _ => None,
+        };
 
         let mut frame_buf = Image { width: fw, height: fh, rgba: vec![0; (fw * fh * 4) as usize] };
         composite_frame(&mut frame_buf, &sheet, acc, frame, state, self.facing == Facing::Left, &self.color, skip_body);
@@ -1067,7 +1060,6 @@ impl Pet {
         } else {
             eye_color(&self.color)
         };
-        let s = self.display() / 48.0;
         let mut display_img = scale_nearest(&frame_buf, (fw as f64 * 0.5 * self.scale * self.dpi_scale).round() as u32, (fh as f64 * 0.5 * self.scale * self.dpi_scale).round() as u32);
         draw_pupils(&mut display_img, self.display(), &self.color, eye, self.gaze, self.facing == Facing::Left, self.blink, state);
 
@@ -1077,14 +1069,13 @@ impl Pet {
         }
 
         // Throw rotation.
-        if let Some(t) = &self.throw {
+        if self.throw.is_some() {
             let angle = self.throw_rotation(now);
             if angle != 0.0 {
                 display_img = rotate(&display_img, angle);
             }
         }
 
-        let _ = s;
         // Position: center the composite over the display box.
         let w = display_img.width as i64;
         let h = display_img.height as i64;
@@ -1120,9 +1111,7 @@ impl Pet {
     }
 
     fn throw_rotation(&self, now: u64) -> f64 {
-        let t = self.throw.as_ref()?;
-        let elapsed = (now - t.start).max(0) as f64 / 1000.0;
-        let _ = elapsed;
+        let _ = (self.throw.as_ref(), now);
         0.0 // rotation omitted in the native v1; pet stays upright mid-air
     }
 
@@ -1334,8 +1323,8 @@ impl Pet {
             if let Some((cx, cy)) = cursor {
                 let contacting = cx >= t.left && cx <= t.left + self.display() && cy >= t.top && cy <= t.top + self.display();
                 if t.mouse_bounce_armed && !t.cursor_contacting && contacting && t.vy > 0.0 {
-                    let pointer_vx = 0.0; // simplified: no cursor velocity tracking in native v1
-                    let pointer_vy = 0.0;
+                    let pointer_vx: f64 = 0.0; // simplified: no cursor velocity tracking in native v1
+                    let pointer_vy: f64 = 0.0;
                     let mut hv = t.vx * MOUSE_BOUNCE_H_RETENTION + pointer_vx * MOUSE_BOUNCE_H_TRANSFER;
                     hv = hv.clamp(-MOUSE_BOUNCE_MAX_H, MOUSE_BOUNCE_MAX_H);
                     let uv = (t.vy * MOUSE_BOUNCE_V_RESTITUTION + pointer_vy.max(0.0) * MOUSE_BOUNCE_UP_TRANSFER).max(MOUSE_BOUNCE_MIN_UP);
@@ -1356,7 +1345,11 @@ impl Pet {
         self.throw = Some(t);
 
         // Land
-        let floor_land = self.april_fools ? self.screen_w - self.display() : self.max_top();
+        let floor_land = if self.april_fools {
+            self.screen_w - self.display()
+        } else {
+            self.max_top()
+        };
         if now.saturating_sub(t.start) >= THROW_MAX_DURATION || (self.april_fools && t.left >= floor_land && t.vx >= 0.0) || (!self.april_fools && t.top >= floor_land && t.vy >= 0.0) {
             self.finish_throw(now);
             if self.bounce_count >= CONFETTI_SCORE {
@@ -1439,6 +1432,42 @@ impl Pet {
         self.left = p.ball_x;
         self.top = p.ball_y;
         self.set_state(State::Falling, now);
+    }
+
+    pub fn set_scale(&mut self, s: f64) {
+        self.scale = s.max(MIN_SCALE);
+        self.clamp_position();
+    }
+
+    pub fn set_color(&mut self, c: String) {
+        self.color = c;
+    }
+
+    pub fn set_accessory(&mut self, id: Option<String>) {
+        self.accessory = id;
+    }
+
+    pub fn toggle_run(&mut self, now: u64) {
+        self.on_the_run = !self.on_the_run;
+        if !self.on_the_run {
+            self.wake(now);
+            self.place_rest();
+            self.set_state(State::Idle, now);
+        }
+    }
+
+    pub fn hide(&mut self) {
+        self.on_the_run = true;
+    }
+
+    pub fn show(&mut self, now: u64) {
+        self.on_the_run = false;
+        self.wake(now);
+        // Randomize the resting spot on every show.
+        self.left = self.rng() * self.max_left();
+        self.top = self.max_top();
+        self.place_rest();
+        self.set_state(State::Idle, now);
     }
 
     /// Serialize the current pet configuration for persistence.

@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use engine::{Config, Pet};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{BOOL, COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BLENDFUNCTION, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
@@ -99,12 +99,12 @@ fn now_ms() -> u64 {
 }
 
 fn is_april_fools() -> bool {
-    let (y, m, d) = utc_date();
+    let (_, m, d) = utc_date();
     m == 4 && d == 1
 }
 
 fn is_halloween() -> bool {
-    let (y, m, d) = utc_date();
+    let (_, m, d) = utc_date();
     m == 10 && d == 31
 }
 
@@ -439,7 +439,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if mouse == WM_RBUTTONUP as u32 || mouse == WM_CONTEXTMENU as u32 {
                 APP.with(|cell| {
                     let app = cell.borrow();
-                    if let Some(a) = app.as_ref() {
+                    if app.is_some() {
                         let menu = build_tray_menu();
                         let mut pt = POINT::default();
                         let _ = GetCursorPos(&mut pt);
@@ -556,7 +556,8 @@ unsafe fn tick_and_render(a: &mut App) {
 }
 
 fn main() {
-    let hinst = unsafe { GetModuleHandleW(None) }.unwrap();
+    let hmod = unsafe { GetModuleHandleW(None) }.unwrap();
+    let hinst = HINSTANCE(hmod.0);
     let class_name = w!("BuddyRoamsWindow");
 
     unsafe {
@@ -584,7 +585,7 @@ fn main() {
             1,
             None,
             None,
-            Some(hinst),
+            hinst,
             None,
         )
         .unwrap();

@@ -3,6 +3,7 @@
 include!(concat!(env!("OUT_DIR"), "/generated_assets.rs"));
 
 /// A decoded RGBA8 image.
+#[derive(Clone)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
