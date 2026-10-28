@@ -2,7 +2,7 @@
 /**
  * Extracts the Buddy pet pixel-art assets (body sprite sheets + accessory
  * atlases) from an installed VS Code application and copies them into
- * `src/assets/pet/` so Vite can bundle them into the Tauri app.
+ * `assets/pet/` so build.rs can embed them into the native binary.
  *
  * These are Microsoft's copyrighted assets, shipped with VS Code under
  * `out/vs/workbench/contrib/chat/browser/widget/media/chatPet/`. Bundling them
@@ -70,8 +70,8 @@ function buildSpriteFiles(variant) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
-const outBody = path.join(root, 'src', 'assets', 'pet');
-const outAcc = path.join(root, 'src', 'assets', 'pet', 'accessories');
+const outBody = path.join(root, 'assets', 'pet');
+const outAcc = path.join(root, 'assets', 'pet', 'accessories');
 
 const appRoot =
 	process.argv[2] ??
