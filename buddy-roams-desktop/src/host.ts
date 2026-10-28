@@ -6,8 +6,9 @@
  *  2. Create the overlay host element and inject `__BETTER_PET_CONFIG__` /
  *     `__BETTER_PET_ROOT__` before the engine loads.
  *  3. Bridge the native context menu (`__BETTER_PET_MENU__`) to the Rust side.
- *  4. Keep the OS window a small box that follows the pet: measure the pet's
- *     on-screen bounds and translate them into a window frame each frame.
+ *  4. Keep the overlay click-through per pixel: rasterize the pet's current
+ *     silhouette into a 1-bit mask and stream it (bits on frame change, rect on
+ *     move) to the Rust side for WM_NCHITTEST hit-testing.
  *  5. Load the self-contained `engine.js`.
  */
 import { invoke } from "@tauri-apps/api/core";
@@ -66,12 +67,6 @@ root.className = "better-pet-host";
 window.__BETTER_PET_ROOT__ = root;
 window.__BETTER_PET_CONFIG__ = { sprites, accessories };
 
-// Size the overlay to the virtual (full-screen) roaming area. The OS window
-// itself stays small; the engine keeps using this screen-based coordinate
-// space for physics, floor and walls.
-document.documentElement.style.setProperty("--pet-screen-w", `${window.screen.width}px`);
-document.documentElement.style.setProperty("--pet-screen-h", `${window.screen.height}px`);
-
 // Native context-menu bridge: the engine calls this with a JSON menu spec; the
 // Rust side renders a native menu and emits "pet-menu-action" with the chosen
 // id (handled below).
@@ -98,92 +93,103 @@ void listen<string>("pet-notify", (e) => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* 4. Small window that follows the pet                                       */
+/* 4. Per-pixel hit-test mask                                                 */
 /* -------------------------------------------------------------------------- */
 
-// Transparent margin (px) kept around the pet inside the window.
-const FRAME_PADDING = 12;
+// Offscreen canvas used to rasterize the pet's current body + hat + eye
+// accessory into a 1-bit alpha mask: 1 = opaque (clickable), 0 = transparent
+// (click-through). The Rust side checks this mask in WM_NCHITTEST so only the
+// pet's actual pixels intercept the mouse.
+const maskCanvas = document.createElement("canvas");
+const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true });
 
-// Reused for measuring the pet's visible bounding box (union of the button and
-// all its overflowing descendants: sprite, hat, eyes, speech bubble).
-const measureRange = document.createRange();
+let lastMaskBits: number[] | null = null;
+let lastMaskRect = "";
 
-let lastFrame = "";
-
-function overlayOrigin(): { x: number; y: number } {
-	const overlay = root.querySelector<HTMLElement>(".chat-pet-overlay");
-	if (!overlay) {
-		return { x: 0, y: 0 };
+function buildPetMask(): { bits: number[]; width: number; height: number; left: number; top: number } | null {
+	const btn = root.querySelector<HTMLElement>(".chat-pet-button");
+	const sprite = root.querySelector<HTMLCanvasElement>(".chat-pet-sprite:not(.hidden) .chat-pet-canvas");
+	if (!btn || !sprite || !maskCtx) {
+		return null;
 	}
-	const ob = overlay.getBoundingClientRect();
-	return { x: ob.left, y: ob.top };
+
+	const display = Math.max(1, Math.round(btn.offsetWidth));
+	if (maskCanvas.width !== display || maskCanvas.height !== display) {
+		maskCanvas.width = display;
+		maskCanvas.height = display;
+	}
+	maskCtx.clearRect(0, 0, display, display);
+	maskCtx.drawImage(sprite, 0, 0, display, display);
+
+	// Some hats draw extra pixels (monocle, glasses) on a separate canvas.
+	const eyeAccessory = root.querySelector<HTMLCanvasElement>(
+		".chat-pet-eye-accessory:not(.hidden) .chat-pet-eye-accessory-canvas",
+	);
+	if (eyeAccessory) {
+		maskCtx.drawImage(eyeAccessory, 0, 0, display, display);
+	}
+
+	const img = maskCtx.getImageData(0, 0, display, display);
+	const bytes = Math.ceil((display * display) / 8);
+	const bits = new Array<number>(bytes).fill(0);
+	for (let i = 0; i < img.data.length; i += 4) {
+		if (img.data[i + 3] > 32) {
+			const pixel = i / 4;
+			bits[pixel >> 3] |= 1 << (pixel & 7);
+		}
+	}
+
+	return {
+		bits,
+		width: display,
+		height: display,
+		left: btn.offsetLeft,
+		top: btn.offsetTop,
+	};
 }
 
-function measurePetAabb(): { left: number; top: number; width: number; height: number } | null {
+function reportPetHitMask(): void {
 	const btn = root.querySelector<HTMLElement>(".chat-pet-button");
 	if (!btn) {
-		return null;
-	}
-	const origin = overlayOrigin();
-
-	// Union of the button's own (possibly rotated) box and all its overflowing
-	// descendants (sprite, hat, eyes, speech bubble). The button box keeps the
-	// clickable area inside the window even when the pet is shrunk.
-	const box = btn.getBoundingClientRect();
-	measureRange.selectNodeContents(btn);
-	const content = measureRange.getBoundingClientRect();
-	let left = Math.min(box.left, content.left) - origin.x;
-	let top = Math.min(box.top, content.top) - origin.y;
-	let right = Math.max(box.right, content.right) - origin.x;
-	let bottom = Math.max(box.bottom, content.bottom) - origin.y;
-
-	// Include the bounce counter / pong score when it is visible.
-	const counter = root.querySelector<HTMLElement>(".chat-pet-bounce-counter:not(.hidden)");
-	if (counter) {
-		const cr = counter.getBoundingClientRect();
-		left = Math.min(left, cr.left - origin.x);
-		top = Math.min(top, cr.top - origin.y);
-		right = Math.max(right, cr.right - origin.x);
-		bottom = Math.max(bottom, cr.bottom - origin.y);
-	}
-
-	if (right - left <= 0 || bottom - top <= 0) {
-		return null;
-	}
-	return { left, top, width: right - left, height: bottom - top };
-}
-
-function updateWindowFrame(): void {
-	const aabb = measurePetAabb();
-	if (!aabb) {
 		return;
 	}
 
-	const vw = Math.ceil(aabb.width + FRAME_PADDING * 2);
-	const vh = Math.ceil(aabb.height + FRAME_PADDING * 2);
+	// Pet hidden ("on the run"): clear the mask so everything is click-through.
+	if (btn.offsetWidth <= 0 || btn.offsetHeight <= 0) {
+		if (lastMaskBits !== null) {
+			lastMaskBits = null;
+			lastMaskRect = "";
+			void invoke("set_pet_mask", { bits: [], width: 0, height: 0 });
+		}
+		return;
+	}
 
-	// Center the pet's AABB in the window. The overlay origin (0,0) maps to the
-	// screen's top-left, so the window top-left is the AABB center minus half
-	// the window size, and the overlay offset is the negation of that position.
-	const cx = aabb.left + aabb.width / 2;
-	const cy = aabb.top + aabb.height / 2;
-	const winX = Math.round(cx - vw / 2);
-	const winY = Math.round(cy - vh / 2);
-	const offX = vw / 2 - cx;
-	const offY = vh / 2 - cy;
+	const mask = buildPetMask();
+	if (!mask) {
+		return;
+	}
 
-	root.style.transform = `translate(${offX}px, ${offY}px)`;
+	// The bits only change when the animation frame changes; send them then.
+	const bitsChanged =
+		!lastMaskBits ||
+		lastMaskBits.length !== mask.bits.length ||
+		lastMaskBits.some((b, i) => b !== mask.bits[i]);
+	if (bitsChanged) {
+		lastMaskBits = mask.bits;
+		void invoke("set_pet_mask", { bits: mask.bits, width: mask.width, height: mask.height });
+	}
 
-	const frame = `${winX},${winY},${vw},${vh}`;
-	if (frame !== lastFrame) {
-		lastFrame = frame;
-		void invoke("set_window_frame", { x: winX, y: winY, w: vw, h: vh });
+	// The position changes whenever the pet moves.
+	const rect = `${Math.round(mask.left)},${Math.round(mask.top)}`;
+	if (rect !== lastMaskRect) {
+		lastMaskRect = rect;
+		void invoke("set_pet_mask_rect", { left: mask.left, top: mask.top });
 	}
 }
 
-function startFrameTracker(): void {
+function startHitMaskReporter(): void {
 	const tick = (): void => {
-		updateWindowFrame();
+		reportPetHitMask();
 		requestAnimationFrame(tick);
 	};
 	requestAnimationFrame(tick);
@@ -194,7 +200,7 @@ function startFrameTracker(): void {
 /* -------------------------------------------------------------------------- */
 
 void import("./engine.js").then(() => {
-	startFrameTracker();
+	startHitMaskReporter();
 });
 
 /* TypeScript declarations for the globals the engine exposes/consumes. */

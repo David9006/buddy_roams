@@ -1670,12 +1670,12 @@
 		function getMinimumTop() { return 0; }
 
 		/**
-		 * Desktop: the roaming area is a virtual screen whose origin maps to the
-		 * real screen's top-left. The overlay is sized to that screen (see the
-		 * host CSS), while the OS window is a small box that follows the pet.
-		 * The floor is therefore the overlay's height, not the window's.
+		 * Desktop: the floor is the bottom of the full-screen overlay window.
+		 * The overlay host fills the whole window, so this is simply the window
+		 * height.
 		 */
 		function floorTop() {
+			if (window.innerHeight > 0) { return window.innerHeight; }
 			return overlayRect().height;
 		}
 
