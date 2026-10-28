@@ -190,28 +190,64 @@ fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[cfg(target_os = "windows")]
 mod win32 {
-	use std::sync::{Mutex, OnceLock};
+	use std::collections::HashMap;
+	use std::sync::atomic::{AtomicIsize, Ordering};
+	use std::sync::Mutex;
+	use std::time::{Duration, Instant};
 
 	use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-	use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+	use windows::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, POINT, WPARAM};
 	use windows::Win32::Graphics::Gdi::ScreenToClient;
 	use windows::Win32::UI::WindowsAndMessaging::{
-		DefWindowProcW, GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC, HTCLIENT,
-		HTTRANSPARENT, WM_NCHITTEST,
+		DefWindowProcW, EnumChildWindows, GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC,
+		GWL_EXSTYLE, HTCLIENT, HTTRANSPARENT, WM_NCHITTEST, WS_EX_NOACTIVATE,
 	};
 
-	static ORIG_PROC: OnceLock<usize> = OnceLock::new();
-	// x, y, width, height in logical (client) coordinates. width<=0 => fully
-	// click-through.
+	/// Original window procedures, keyed by HWND (as isize), so non-hit-test
+	/// messages are forwarded to the right window's original proc.
+	static ORIG_PROCS: Mutex<HashMap<isize, usize>> = Mutex::new(HashMap::new());
+	/// Top-level overlay window handle.
+	static TOP_HWND: AtomicIsize = AtomicIsize::new(0);
+	/// Serializes child-window enumeration (may run from multiple threads).
+	static ENUM_LOCK: Mutex<()> = Mutex::new(());
+	/// Last time we enumerated child windows (throttles re-enumeration).
+	static LAST_ENUM: Mutex<Option<Instant>> = Mutex::new(None);
+	/// Pet interactive rect in logical (CSS) pixels: [x, y, w, h]. width <= 0
+	/// means fully click-through.
 	static REGION: Mutex<[f64; 4]> = Mutex::new([0.0, 0.0, 0.0, 0.0]);
+	/// Window scale factor (physical px per CSS px).
+	static SCALE: Mutex<f64> = Mutex::new(1.0);
 
 	pub fn init(window: tauri::WebviewWindow) {
 		let Ok(hwnd) = window_hwnd(&window) else { return };
+		let scale = window.scale_factor().unwrap_or(1.0);
+		*SCALE.lock().unwrap() = scale;
+		TOP_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+
 		unsafe {
+			// The pet is mouse-only: never let the overlay steal keyboard focus
+			// from the window the user was working in.
+			let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+			let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE.0 as isize);
+
 			let prev = GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
-			let _ = ORIG_PROC.set(prev as usize);
+			ORIG_PROCS.lock().unwrap().insert(hwnd.0 as isize, prev as usize);
 			let _ = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wndproc as usize as isize);
+
+			// Subclass any descendants that already exist.
+			ensure_children_subclassed();
 		}
+
+		// WebView2 creates its child windows (the windows that actually receive
+		// WM_NCHITTEST) asynchronously after the window is built. Re-scan for a
+		// while so they get subclassed too. SetWindowLongPtrW is not thread
+		// affine, so this is safe to do from here.
+		std::thread::spawn(|| {
+			for _ in 0..120 {
+				std::thread::sleep(Duration::from_millis(250));
+				unsafe { ensure_children_subclassed(); }
+			}
+		});
 	}
 
 	pub fn update_hit_region(rect: &str) {
@@ -239,6 +275,43 @@ mod win32 {
 		}
 	}
 
+	/// Walk the whole descendant tree and subclass every window we haven't seen
+	/// yet. Called from `init`, from the re-scan thread, and (self-healing) from
+	/// the hit-test path.
+	unsafe fn ensure_children_subclassed() {
+		let Ok(_guard) = ENUM_LOCK.try_lock() else { return };
+		let now = Instant::now();
+		{
+			let mut last = LAST_ENUM.lock().unwrap();
+			if let Some(t) = *last {
+				if now.duration_since(t) < Duration::from_millis(200) {
+					return;
+				}
+			}
+			*last = Some(now);
+		}
+		let top = TOP_HWND.load(Ordering::Relaxed);
+		if top == 0 {
+			return;
+		}
+		let _ = EnumChildWindows(HWND(top as *mut _), Some(enum_proc), LPARAM(0));
+	}
+
+	unsafe extern "system" fn enum_proc(hwnd: HWND, _lparam: LPARAM) -> BOOL {
+		let key = hwnd.0 as isize;
+		let mut map = ORIG_PROCS.lock().unwrap();
+		if map.contains_key(&key) {
+			return BOOL(1);
+		}
+		let prev = GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+		if prev == 0 || prev as usize == wndproc as usize {
+			return BOOL(1);
+		}
+		map.insert(key, prev as usize);
+		let _ = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wndproc as usize as isize);
+		BOOL(1)
+	}
+
 	unsafe extern "system" fn wndproc(
 		hwnd: HWND,
 		msg: u32,
@@ -246,26 +319,38 @@ mod win32 {
 		lparam: LPARAM,
 	) -> LRESULT {
 		if msg == WM_NCHITTEST {
+			// Keep the subclass list fresh (children can appear lazily).
+			ensure_children_subclassed();
+
 			let x = ((lparam.0 as i64 & 0xffff) as i16) as i32;
 			let y = ((lparam.0 as i64 >> 16) as i16) as i32;
 			let mut pt = POINT { x, y };
-			let _ = ScreenToClient(hwnd, &mut pt);
+
+			// Convert to the top-level window's client coordinates so the check
+			// is consistent no matter which descendant received the message.
+			let top = TOP_HWND.load(Ordering::Relaxed);
+			let _ = ScreenToClient(HWND(top as *mut _), &mut pt);
+
+			let scale = *SCALE.lock().unwrap();
 			let region = *REGION.lock().unwrap();
 			let inside = region[2] > 0.0
-				&& (pt.x as f64) >= region[0]
-				&& (pt.x as f64) <= region[0] + region[2]
-				&& (pt.y as f64) >= region[1]
-				&& (pt.y as f64) <= region[1] + region[3];
+				&& (pt.x as f64) >= region[0] * scale
+				&& (pt.x as f64) <= (region[0] + region[2]) * scale
+				&& (pt.y as f64) >= region[1] * scale
+				&& (pt.y as f64) <= (region[1] + region[3]) * scale;
 			if inside {
 				return LRESULT(HTCLIENT as isize);
 			}
 			return LRESULT(HTTRANSPARENT as isize);
 		}
 
-		if let Some(prev) = ORIG_PROC.get() {
-			let proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
-				std::mem::transmute(*prev);
-			return proc(hwnd, msg, wparam, lparam);
+		let prev = ORIG_PROCS.lock().unwrap().get(&(hwnd.0 as isize)).copied();
+		if let Some(prev) = prev {
+			if prev != 0 {
+				let proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
+					std::mem::transmute(prev);
+				return proc(hwnd, msg, wparam, lparam);
+			}
 		}
 		DefWindowProcW(hwnd, msg, wparam, lparam)
 	}
