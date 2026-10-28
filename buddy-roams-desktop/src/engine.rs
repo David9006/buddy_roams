@@ -1342,19 +1342,24 @@ impl Pet {
 
         self.left = t.left;
         self.top = t.top;
-        self.throw = Some(t);
 
-        // Land
+        // Land check (computed before moving `t` back into the throw slot).
         let floor_land = if self.april_fools {
             self.screen_w - self.display()
         } else {
             self.max_top()
         };
-        if now.saturating_sub(t.start) >= THROW_MAX_DURATION || (self.april_fools && t.left >= floor_land && t.vx >= 0.0) || (!self.april_fools && t.top >= floor_land && t.vy >= 0.0) {
+        let landed = now.saturating_sub(t.start) >= THROW_MAX_DURATION
+            || (self.april_fools && t.left >= floor_land && t.vx >= 0.0)
+            || (!self.april_fools && t.top >= floor_land && t.vy >= 0.0);
+
+        if landed {
             self.finish_throw(now);
             if self.bounce_count >= CONFETTI_SCORE {
                 self.bounce_count = 0;
             }
+        } else {
+            self.throw = Some(t);
         }
     }
 
