@@ -656,6 +656,21 @@
 	background: transparent;
 }
 
+/*
+ * The OS window is a small box that follows the pet, but the overlay inside it
+ * is sized to the virtual (full-screen) roaming area so the engine's coordinate
+ * space stays screen-based. `--pet-screen-w/--pet-screen-h` are set by host.ts
+ * before the engine loads.
+ */
+.better-pet-host .chat-pet-overlay {
+	top: 0;
+	left: 0;
+	right: auto;
+	bottom: auto;
+	width: var(--pet-screen-w, 100%);
+	height: var(--pet-screen-h, 100%);
+}
+
 /* The pet button itself must stay interactive. */
 .better-pet-host .chat-pet-button {
 	pointer-events: auto;

@@ -10,7 +10,7 @@ Buddy Roams 桌面版 —— 把 VS Code 的 Buddy 宠物放到你的整个桌�
 
 ## 功能
 
-- 全屏透明、置顶的覆盖层：只有宠物本体可交互，其余像素鼠标穿透（点不到宠物就等于点在桌面上）。
+- 小窗口跟随宠物：OS 窗口始终只覆盖宠物本身，其余屏幕区域完全可交互（不会挡住桌面或其它窗口）。
 - 宠物全部状态与动画、17 顶帽子、换色、缩放、grow/shrink、随机出生点。
 - 帽子特殊能力：spinner 竹蜻蜓、propeller 升力与抛掷、party 点击概率、wizard 隐身 + 瞬移。
 - 节日：万圣节隐身（只露帽子 + 橙色眼球）、愚人节右向重力 + 左右 pong。
@@ -107,8 +107,10 @@ link.exe         # 应能找到 MSVC 链接器（在 VS Developer Prompt 或配�
 ## 已知限制 / 后续
 
 - 第一版只覆盖主显示器；多显示器漫游待实现。
-- 点击穿透在 Windows 上通过 `WM_NCHITTEST` 返回 `HTTRANSPARENT` 实现；macOS / Linux 的
-  等价方案在后续移植时补充。
+- 窗口在 Windows 上是「小窗跟随宠物」实现：窗口随宠物移动 / 缩放，只盖住宠物本体，因此
+  不会遮挡其它窗口；macOS / Linux 的等价方案在后续移植时补充。
+- 小窗模式下，超出宠物本体的瞬时特效（20 连击彩带、愚人节 pong 的球拍）可能被窗口边缘
+  裁切，后续再处理。
 - 开机自启、全局快捷键、通知触发鼓掌等为后续项。
 
 ---
@@ -123,7 +125,7 @@ This is the first release, **Windows-first** (macOS / Ubuntu ports are planned).
 
 ## Features
 
-- Fullscreen transparent, always-on-top overlay: only the pet itself is interactive; all other pixels are click-through (clicking anywhere except the pet passes through to the desktop).
+- A small window that follows the pet: the OS window always covers only the pet itself, leaving the rest of the screen fully interactive (it never blocks the desktop or other windows).
 - All pet states and animations, 17 hats, color changes, scaling, grow/shrink, random spawn point.
 - Hat abilities: spinner propeller, propeller lift & throws, party click probability, wizard invisibility + teleport.
 - Festivals: Halloween invisibility (hat + orange eyes only), April Fools' rightward gravity + horizontal pong.
@@ -212,5 +214,10 @@ link.exe         # MSVC linker should be found (from a VS Developer Prompt or wi
 ## Known limitations / next steps
 
 - The first release covers only the primary monitor; multi-monitor roaming is planned.
-- Click-through on Windows is implemented by returning `HTTRANSPARENT` from `WM_NCHITTEST`; the macOS / Linux equivalents will be added with those ports.
+- On Windows the window is implemented as a "small window following the pet": it moves and
+  resizes with the pet and covers only the pet itself, so it never blocks other windows; the
+  macOS / Linux equivalents will be added with those ports.
+- In small-window mode, transient effects that extend beyond the pet itself (the 20-bounce
+  confetti burst and the April Fools' pong paddle) may be clipped by the window edge; to be
+  handled later.
 - Auto-start, global shortcuts, notification-triggered clapping, etc. are future items.

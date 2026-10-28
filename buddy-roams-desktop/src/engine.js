@@ -1670,12 +1670,12 @@
 		function getMinimumTop() { return 0; }
 
 		/**
-		 * Desktop: the floor is the bottom of the (work-area-sized) window. The
-		 * overlay host fills the whole window, so this is simply the window
-		 * height.
+		 * Desktop: the roaming area is a virtual screen whose origin maps to the
+		 * real screen's top-left. The overlay is sized to that screen (see the
+		 * host CSS), while the OS window is a small box that follows the pet.
+		 * The floor is therefore the overlay's height, not the window's.
 		 */
 		function floorTop() {
-			if (window.innerHeight > 0) { return window.innerHeight; }
 			return overlayRect().height;
 		}
 
@@ -2461,8 +2461,8 @@
 			event.preventDefault();
 			event.stopPropagation();
 			button.focus();
-			var startX = event.clientX;
-			var startY = event.clientY;
+			var startX = event.screenX;
+			var startY = event.screenY;
 			dragSamples = [{ x: startX, y: startY, time: now() }];
 			var buttonBounds = button.getBoundingClientRect();
 			var bounds = overlayRect();
@@ -2471,10 +2471,10 @@
 			var didDrag = false;
 
 			function onMove(moveEvent) {
-				var deltaX = moveEvent.clientX - startX;
-				var deltaY = moveEvent.clientY - startY;
+				var deltaX = moveEvent.screenX - startX;
+				var deltaY = moveEvent.screenY - startY;
 				var sampleTime = now();
-				dragSamples.push({ x: moveEvent.clientX, y: moveEvent.clientY, time: sampleTime });
+				dragSamples.push({ x: moveEvent.screenX, y: moveEvent.screenY, time: sampleTime });
 				while (dragSamples.length > 2 && sampleTime - dragSamples[0].time > THROW_VELOCITY_SAMPLE_DURATION) {
 					dragSamples.shift();
 				}
@@ -3180,7 +3180,9 @@
 			var previousCursorPosition = cursorPosition;
 			cursorPosition = [event.clientX, event.clientY];
 			mouseBounceArmed = t >= mouseBounceAvailableAt;
-			cursorSamples.push({ x: event.clientX, y: event.clientY, time: t });
+			// Velocity samples use screen coordinates so a moving window never
+			// distorts the measured pointer speed.
+			cursorSamples.push({ x: event.screenX, y: event.screenY, time: t });
 			while (cursorSamples.length > 2 && (cursorSamples.length > POINTER_VELOCITY_SAMPLE_LIMIT || t - cursorSamples[0].time > THROW_VELOCITY_SAMPLE_DURATION)) {
 				cursorSamples.shift();
 			}

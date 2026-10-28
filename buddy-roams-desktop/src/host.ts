@@ -6,8 +6,8 @@
  *  2. Create the overlay host element and inject `__BETTER_PET_CONFIG__` /
  *     `__BETTER_PET_ROOT__` before the engine loads.
  *  3. Bridge the native context menu (`__BETTER_PET_MENU__`) to the Rust side.
- *  4. Report the pet's on-screen rectangle so the Windows host can make every
- *     pixel except the pet click-through.
+ *  4. Keep the OS window a small box that follows the pet: measure the pet's
+ *     on-screen bounds and translate them into a window frame each frame.
  *  5. Load the self-contained `engine.js`.
  */
 import { invoke } from "@tauri-apps/api/core";
@@ -66,6 +66,12 @@ root.className = "better-pet-host";
 window.__BETTER_PET_ROOT__ = root;
 window.__BETTER_PET_CONFIG__ = { sprites, accessories };
 
+// Size the overlay to the virtual (full-screen) roaming area. The OS window
+// itself stays small; the engine keeps using this screen-based coordinate
+// space for physics, floor and walls.
+document.documentElement.style.setProperty("--pet-screen-w", `${window.screen.width}px`);
+document.documentElement.style.setProperty("--pet-screen-h", `${window.screen.height}px`);
+
 // Native context-menu bridge: the engine calls this with a JSON menu spec; the
 // Rust side renders a native menu and emits "pet-menu-action" with the chosen
 // id (handled below).
@@ -92,31 +98,92 @@ void listen<string>("pet-notify", (e) => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* 4. Click-through: report the pet's interactive rectangle                   */
+/* 4. Small window that follows the pet                                       */
 /* -------------------------------------------------------------------------- */
 
-let lastRect = "";
+// Transparent margin (px) kept around the pet inside the window.
+const FRAME_PADDING = 12;
 
-function reportInteractiveRegion(): void {
-	const btn = root.querySelector<HTMLElement>(".chat-pet-button");
-	let rect = "";
-	if (btn) {
-		const r = btn.getBoundingClientRect();
-		if (r.width > 0 && r.height > 0) {
-			// A little margin around the pet so clicks on its edge still land.
-			const pad = 4;
-			rect = `${Math.floor(r.left - pad)},${Math.floor(r.top - pad)},${Math.ceil(r.width + pad * 2)},${Math.ceil(r.height + pad * 2)}`;
-		}
+// Reused for measuring the pet's visible bounding box (union of the button and
+// all its overflowing descendants: sprite, hat, eyes, speech bubble).
+const measureRange = document.createRange();
+
+let lastFrame = "";
+
+function overlayOrigin(): { x: number; y: number } {
+	const overlay = root.querySelector<HTMLElement>(".chat-pet-overlay");
+	if (!overlay) {
+		return { x: 0, y: 0 };
 	}
-	if (rect !== lastRect) {
-		lastRect = rect;
-		void invoke("set_interactive_region", { rect });
+	const ob = overlay.getBoundingClientRect();
+	return { x: ob.left, y: ob.top };
+}
+
+function measurePetAabb(): { left: number; top: number; width: number; height: number } | null {
+	const btn = root.querySelector<HTMLElement>(".chat-pet-button");
+	if (!btn) {
+		return null;
+	}
+	const origin = overlayOrigin();
+
+	// Union of the button's own (possibly rotated) box and all its overflowing
+	// descendants (sprite, hat, eyes, speech bubble). The button box keeps the
+	// clickable area inside the window even when the pet is shrunk.
+	const box = btn.getBoundingClientRect();
+	measureRange.selectNodeContents(btn);
+	const content = measureRange.getBoundingClientRect();
+	let left = Math.min(box.left, content.left) - origin.x;
+	let top = Math.min(box.top, content.top) - origin.y;
+	let right = Math.max(box.right, content.right) - origin.x;
+	let bottom = Math.max(box.bottom, content.bottom) - origin.y;
+
+	// Include the bounce counter / pong score when it is visible.
+	const counter = root.querySelector<HTMLElement>(".chat-pet-bounce-counter:not(.hidden)");
+	if (counter) {
+		const cr = counter.getBoundingClientRect();
+		left = Math.min(left, cr.left - origin.x);
+		top = Math.min(top, cr.top - origin.y);
+		right = Math.max(right, cr.right - origin.x);
+		bottom = Math.max(bottom, cr.bottom - origin.y);
+	}
+
+	if (right - left <= 0 || bottom - top <= 0) {
+		return null;
+	}
+	return { left, top, width: right - left, height: bottom - top };
+}
+
+function updateWindowFrame(): void {
+	const aabb = measurePetAabb();
+	if (!aabb) {
+		return;
+	}
+
+	const vw = Math.ceil(aabb.width + FRAME_PADDING * 2);
+	const vh = Math.ceil(aabb.height + FRAME_PADDING * 2);
+
+	// Center the pet's AABB in the window. The overlay origin (0,0) maps to the
+	// screen's top-left, so the window top-left is the AABB center minus half
+	// the window size, and the overlay offset is the negation of that position.
+	const cx = aabb.left + aabb.width / 2;
+	const cy = aabb.top + aabb.height / 2;
+	const winX = Math.round(cx - vw / 2);
+	const winY = Math.round(cy - vh / 2);
+	const offX = vw / 2 - cx;
+	const offY = vh / 2 - cy;
+
+	root.style.transform = `translate(${offX}px, ${offY}px)`;
+
+	const frame = `${winX},${winY},${vw},${vh}`;
+	if (frame !== lastFrame) {
+		lastFrame = frame;
+		void invoke("set_window_frame", { x: winX, y: winY, w: vw, h: vh });
 	}
 }
 
-function startRegionReporter(): void {
+function startFrameTracker(): void {
 	const tick = (): void => {
-		reportInteractiveRegion();
+		updateWindowFrame();
 		requestAnimationFrame(tick);
 	};
 	requestAnimationFrame(tick);
@@ -127,7 +194,7 @@ function startRegionReporter(): void {
 /* -------------------------------------------------------------------------- */
 
 void import("./engine.js").then(() => {
-	startRegionReporter();
+	startFrameTracker();
 });
 
 /* TypeScript declarations for the globals the engine exposes/consumes. */
