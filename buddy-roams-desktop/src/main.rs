@@ -397,27 +397,31 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_RBUTTONUP => {
-            APP.with(|cell| {
+            // Build the menu first, then DROP the borrow before TrackPopupMenu:
+            // that call runs a modal message loop that re-enters wndproc, and a
+            // still-held RefCell borrow would panic there.
+            let menu = APP.with(|cell| {
                 let mut app = cell.borrow_mut();
-                if let Some(a) = app.as_mut() {
-                    if !a.pet.on_the_run {
-                        let menu = build_pet_menu(a);
-                        let mut pt = POINT::default();
-                        let _ = GetCursorPos(&mut pt);
-                        let _ = SetForegroundWindow(hwnd);
-                        let _ = TrackPopupMenu(
-                            menu,
-                            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
-                            pt.x,
-                            pt.y,
-                            0,
-                            hwnd,
-                            None,
-                        );
-                        let _ = DestroyMenu(menu);
-                    }
+                match app.as_mut() {
+                    Some(a) if !a.pet.on_the_run => Some(build_pet_menu(a)),
+                    _ => None,
                 }
             });
+            if let Some(menu) = menu {
+                let mut pt = POINT::default();
+                let _ = GetCursorPos(&mut pt);
+                let _ = SetForegroundWindow(hwnd);
+                let _ = TrackPopupMenu(
+                    menu,
+                    TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+                    pt.x,
+                    pt.y,
+                    0,
+                    hwnd,
+                    None,
+                );
+                let _ = DestroyMenu(menu);
+            }
             LRESULT(0)
         }
         WM_TIMER => {
@@ -437,17 +441,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         TRAY_MSG => {
             let mouse = lparam.0 as u32;
             if mouse == WM_RBUTTONUP as u32 || mouse == WM_CONTEXTMENU as u32 {
-                APP.with(|cell| {
+                // Same as above: drop the borrow before TrackPopupMenu.
+                let menu = APP.with(|cell| {
                     let app = cell.borrow();
                     if app.is_some() {
-                        let menu = build_tray_menu();
-                        let mut pt = POINT::default();
-                        let _ = GetCursorPos(&mut pt);
-                        let _ = SetForegroundWindow(hwnd);
-                        let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, None);
-                        let _ = DestroyMenu(menu);
+                        Some(build_tray_menu())
+                    } else {
+                        None
                     }
                 });
+                if let Some(menu) = menu {
+                    let mut pt = POINT::default();
+                    let _ = GetCursorPos(&mut pt);
+                    let _ = SetForegroundWindow(hwnd);
+                    let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, None);
+                    let _ = DestroyMenu(menu);
+                }
             } else if mouse == WM_LBUTTONUP as u32 {
                 handle_command(hwnd, ID_SHOW);
             }

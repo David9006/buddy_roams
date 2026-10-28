@@ -759,52 +759,53 @@ fn composite_frame(
 fn draw_pupils(
     dst: &mut Image,
     display: f64,
-    color: &str,
+    _color: &str,
     eye_color: [u8; 3],
     gaze: (f64, f64),
     facing_left: bool,
     blink: bool,
     state: State,
 ) {
-    let _ = color;
     let s = display / 48.0;
-    // Eye/pupil geometry in 48px display space (matches the CSS).
-    let eye_size = if matches!(state, State::Idle | State::Rendering | State::ButtonPress | State::Yapping) {
-        12.0
+    // Geometry in 48px display space (matches the VS Code CSS exactly). The
+    // pupil is anchored at its top-left, NOT centered, so it lines up with the
+    // dark eye drawn in the body sprite.
+    let (left_x, right_x) = if facing_left {
+        (22.0, 10.0)
     } else {
-        8.0
+        (18.0, 30.0)
     };
     let eye_top = if state == State::Love { 31.0 } else { 30.0 };
-    let pupil_size = if matches!(state, State::Idle | State::Rendering | State::ButtonPress | State::Yapping | State::Love) {
+    // Base pupil is 4x4; "tall" states use an 8px-tall pupil, love uses 7px.
+    let pupil_h = if matches!(
+        state,
+        State::Idle | State::Rendering | State::ButtonPress | State::Yapping
+    ) {
         8.0
+    } else if state == State::Love {
+        7.0
     } else {
         4.0
     };
-    let (left_x, right_x) = if facing_left { (22.0, 10.0) } else { (18.0, 30.0) };
-    let _ = eye_size;
-    let px = pupil_size / 2.0;
-    for (ex, _) in [(left_x, 0.0), (right_x, 0.0)] {
-        // pupil center in 48px space
-        let cx = (ex + 2.0 + gaze.0 * 2.0) * s;
-        let cy = (eye_top + 2.0 + gaze.1 * 2.0) * s;
-        let pw = px * s;
-        // draw a small square of the eye color (pixel-art pupil)
-        let x0 = (cx - pw / 2.0).round() as i64;
-        let y0 = (cy - pw / 2.0).round() as i64;
-        let x1 = (cx + pw / 2.0).round() as i64;
-        let y1 = (cy + pw / 2.0).round() as i64;
-        for y in y0..=y1 {
-            for x in x0..=x1 {
+    let pupil_w = 4.0;
+
+    for ex in [left_x, right_x] {
+        let px = (ex + 2.0 + gaze.0 * 2.0) * s;
+        let py = (eye_top + 2.0 + gaze.1 * 2.0) * s;
+        let x0 = px.round() as i64;
+        let y0 = py.round() as i64;
+        let w = (pupil_w * s).round().max(1.0) as i64;
+        let h = (pupil_h * s).round().max(1.0) as i64;
+        for y in y0..y0 + h {
+            for x in x0..x0 + w {
                 if x < 0 || y < 0 || x >= dst.width as i64 || y >= dst.height as i64 {
                     continue;
                 }
-                let i = ((y * dst.width as i64 + x) * 4) as usize;
-                if blink {
-                    // squash to a thin line (eyelid)
-                    if (y - y0).abs() > 0 && (y - y1).abs() > 0 {
-                        continue;
-                    }
+                // Blink squashes the pupil to a thin horizontal line.
+                if blink && y != y0 && y != y0 + h - 1 {
+                    continue;
                 }
+                let i = ((y * dst.width as i64 + x) * 4) as usize;
                 dst.rgba[i] = eye_color[0];
                 dst.rgba[i + 1] = eye_color[1];
                 dst.rgba[i + 2] = eye_color[2];
