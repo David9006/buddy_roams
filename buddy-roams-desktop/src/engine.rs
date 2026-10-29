@@ -677,6 +677,56 @@ fn frame_index_for(durs: &[u64], elapsed: u64) -> usize {
     durs.len() - 1
 }
 
+/// Whether the segment from (x0,y0) to (x1,y1) intersects the axis-aligned
+/// rectangle [rx, rx+rw] x [ry, ry+rh]. Used so a fast cursor that jumps over
+/// the pet between frames still registers as a catch (mirrors the plugin's
+/// swept `getChatPetMouseCollisionTime`).
+fn segment_intersects_rect(
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    rx: f64,
+    ry: f64,
+    rw: f64,
+    rh: f64,
+) -> bool {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let mut tmin = 0.0f64;
+    let mut tmax = 1.0f64;
+
+    if dx.abs() < 1e-9 {
+        if x0 < rx || x0 > rx + rw {
+            return false;
+        }
+    } else {
+        let t1 = (rx - x0) / dx;
+        let t2 = (rx + rw - x0) / dx;
+        let (ta, tb) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
+        tmin = tmin.max(ta);
+        tmax = tmax.min(tb);
+        if tmin > tmax {
+            return false;
+        }
+    }
+    if dy.abs() < 1e-9 {
+        if y0 < ry || y0 > ry + rh {
+            return false;
+        }
+    } else {
+        let t1 = (ry - y0) / dy;
+        let t2 = (ry + rh - y0) / dy;
+        let (ta, tb) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
+        tmin = tmin.max(ta);
+        tmax = tmax.min(tb);
+        if tmin > tmax {
+            return false;
+        }
+    }
+    true
+}
+
 /// 3x5 pixel-digit patterns (bit 2 = left column, bit 0 = right column).
 fn digit_pattern(d: u8) -> [u8; 5] {
     match d {
@@ -1160,6 +1210,9 @@ pub struct Pet {
     confetti: Vec<ConfettiParticle>,
     confetti_last: u64,
 
+    // previous cursor position (for swept mouse-bounce collision detection)
+    prev_cursor: Option<(f64, f64)>,
+
     // halloween
     pub halloween: bool,
 
@@ -1180,7 +1233,6 @@ struct ThrowMotion {
     propeller: bool,
     propeller_lift: bool,
     grace_until: u64,
-    mouse_bounce_armed: bool,
     cursor_contacting: bool,
     wall_impact_until: u64,
 }
@@ -1270,6 +1322,7 @@ impl Pet {
             next_think: 0,
             confetti: Vec::new(),
             confetti_last: 0,
+            prev_cursor: None,
             halloween,
             rng_state: random_seed(),
         };
@@ -1447,19 +1500,27 @@ impl Pet {
         let bottom = self.top + self.display();
         let x = (cx - w as f64 / 2.0).round() as i64;
         let y = (bottom - h as f64).round() as i64;
+        // The display box's top-right corner (stable, independent of the throw
+        // rotation) is where the combo-counter badge hangs.
+        let box_right = (self.left + self.display()).round() as i64;
+        let box_top = self.top.round() as i64;
 
         // Composite the pet with any extra layers (speech bubble, confetti) into
         // one output image spanning the union of their bounding boxes.
-        self.compose_with_extras(display_img, x, y, now)
+        self.compose_with_extras(display_img, x, y, box_right, box_top, now)
     }
 
-    /// Draws the pet image plus the speech bubble and confetti particles (when
-    /// present) into a single image, returning it and its top-left screen offset.
+    /// Draws the pet image plus the speech bubble, confetti particles and combo
+    /// badge (when present) into a single image, returning it and its top-left
+    /// screen offset.
+    #[allow(clippy::too_many_arguments)]
     fn compose_with_extras(
         &self,
         pet_img: Image,
         pet_x: i64,
         pet_y: i64,
+        box_right: i64,
+        box_top: i64,
         now: u64,
     ) -> Option<(Image, i64, i64)> {
         let pet_w = pet_img.width as i64;
@@ -1513,8 +1574,10 @@ impl Pet {
             let pad = (7.0 * badge_scale).round().max(1.0) as i64;
             let pill_h = (20.0 * badge_scale).round().max(8.0) as i64;
             let pill_w = text.len() as i64 * 4 * digit_px + 2 * pad;
-            let bx = pet_x + pet_w - pill_w / 2;
-            let by = pet_y - pill_h / 2;
+            // Hang the badge at the display box's top-right corner (stable even
+            // while the body sprite rotates mid-air).
+            let bx = box_right - pill_w / 2;
+            let by = box_top - pill_h / 2;
             min_x = min_x.min(bx);
             min_y = min_y.min(by);
             max_x = max_x.max(bx + pill_w);
@@ -1953,7 +2016,6 @@ impl Pet {
             propeller,
             propeller_lift,
             grace_until: now + MOUSE_BOUNCE_RELEASE_GRACE,
-            mouse_bounce_armed: false,
             cursor_contacting: false,
             wall_impact_until: 0,
         });
@@ -1972,6 +2034,10 @@ impl Pet {
     }
 
     pub fn tick(&mut self, now: u64, cursor: Option<(f64, f64)>, cursor_velocity: (f64, f64)) {
+        // Remember the previous cursor position for swept collision detection.
+        let prev_cursor = self.prev_cursor;
+        self.prev_cursor = cursor;
+
         // Transient expiry
         if let Some((s, end)) = self.transient {
             if now >= end {
@@ -2028,7 +2094,7 @@ impl Pet {
 
         // Throw physics
         if let Some(t) = self.throw.take() {
-            self.step_throw(t, now, cursor, cursor_velocity);
+            self.step_throw(t, now, cursor, cursor_velocity, prev_cursor);
         }
 
         // Pong
@@ -2118,6 +2184,7 @@ impl Pet {
         now: u64,
         cursor: Option<(f64, f64)>,
         cursor_velocity: (f64, f64),
+        prev_cursor: Option<(f64, f64)>,
     ) {
         // A wall impact freezes the flight for a beat, then resumes falling.
         if t.wall_impact_until != 0 {
@@ -2200,13 +2267,16 @@ impl Pet {
         // which only requires a descending pet, regardless of hat mode).
         if now >= t.grace_until {
             if let Some((cx, cy)) = cursor {
-                let contacting = cx >= t.left
-                    && cx <= t.left + self.display()
-                    && cy >= t.top
-                    && cy <= t.top + self.display();
-                if t.mouse_bounce_armed && !t.cursor_contacting && contacting && t.vy > 0.0 {
-                    // Mirrors `getChatPetMouseBounceVelocity`, including the
-                    // cursor's own velocity transfer and the edge kick.
+                let display = self.display();
+                // Swept collision: also count a catch when the cursor jumped over
+                // the pet's box between the previous and current frame.
+                let contacting = (cx >= t.left && cx <= t.left + display && cy >= t.top && cy <= t.top + display)
+                    || prev_cursor
+                        .map(|(px, py)| segment_intersects_rect(px, py, cx, cy, t.left, t.top, display, display))
+                        .unwrap_or(false);
+                if !t.cursor_contacting && contacting && t.vy > 0.0 {
+                    // Mirrors the plugin's `tryMouseBounce`: bounce whenever the
+                    // cursor was not touching before but is now, while descending.
                     let pointer_vx = cursor_velocity.0;
                     let pointer_vy = cursor_velocity.1;
                     let pet_center = t.left + self.display() / 2.0;
@@ -2228,12 +2298,8 @@ impl Pet {
                     // Restart the 4s flight watchdog on each bounce (mirrors the
                     // plugin's `beginBounceImpact` resetting `startTime`).
                     t.start = now;
-                    t.mouse_bounce_armed = false;
                 }
                 t.cursor_contacting = contacting;
-                if !contacting {
-                    t.mouse_bounce_armed = true;
-                }
             }
         }
 
