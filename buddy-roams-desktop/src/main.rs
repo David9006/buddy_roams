@@ -530,11 +530,11 @@ unsafe fn handle_command(hwnd: HWND, id: usize) {
                 save_config(a);
             }
             ID_ACC_BASE => {
-                a.pet.set_accessory(None);
+                a.pet.set_accessory(None, now_ms());
                 save_config(a);
             }
             id if (ID_ACC_BASE + 1..ID_ACC_BASE + 1 + ACCESSORIES.len()).contains(&id) => {
-                a.pet.set_accessory(Some(ACCESSORIES[id - ID_ACC_BASE - 1].0.to_string()));
+                a.pet.set_accessory(Some(ACCESSORIES[id - ID_ACC_BASE - 1].0.to_string()), now_ms());
                 save_config(a);
             }
             _ => {}

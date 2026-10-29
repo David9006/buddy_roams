@@ -57,6 +57,44 @@ const PARTY_HAT_SING_CHANCE: f64 = 0.20;
 
 const WIZARD_EYE_COLOR: [u8; 3] = [0xff, 0x9d, 0x2f];
 const WIZARD_INVISIBLE_DURATION: u64 = 2_200;
+const WIZARD_INVISIBLE_MIN_INTERVAL: u64 = 6_000;
+const WIZARD_INVISIBLE_MAX_INTERVAL: u64 = 14_000;
+const WIZARD_TELEPORT_CHANCE_PER_SECOND: f64 = 0.5;
+const WIZARD_TELEPORT_GRACE: u64 = 150;
+
+const WALL_IMPACT_DURATION: u64 = 48;
+
+// Normal-throw rotation (matches the plugin's `getChatPetThrowRotation`).
+const THROW_MAX_FRAME_DURATION: u64 = 32;
+const THROW_ROTATION_PER_PIXEL: f64 = 0.65;
+const THROW_SELF_RIGHTING_START_VELOCITY: f64 = -450.0;
+const THROW_SELF_RIGHTING_SPEED: f64 = 720.0;
+
+// Spinner-hat "bamboo copter": strong drag while rising, slow glide while
+// falling, head-down on the way up and a left/right sprite spin on the way down.
+const SPINNER_ASCENT_GRAVITY: f64 = 3_600.0;
+const SPINNER_DESCENT_GRAVITY: f64 = 600.0;
+const SPINNER_ASCENT_ROTATION: f64 = 180.0;
+const SPINNER_FLIP_INTERVAL: f64 = 90.0;
+
+// Propeller-hat mouse throw behaves like the spinner, with its own tuning.
+const PROPELLER_THROW_ASCENT_GRAVITY: f64 = 5_400.0;
+const PROPELLER_THROW_DESCENT_GRAVITY: f64 = 950.0;
+const PROPELLER_THROW_FLIP_INTERVAL: f64 = 90.0;
+
+// Propeller-hat "helicopter" lift (rapid facing switches wind it up).
+const PROPELLER_WIGGLE_COUNT: u32 = 4;
+const PROPELLER_WIGGLE_MAX_INTERVAL: u64 = 160;
+const PROPELLER_LIFT_UPWARD_VELOCITY: f64 = -700.0;
+const PROPELLER_ASCENT_DECELERATION: f64 = 500.0;
+const PROPELLER_DESCENT_GRAVITY: f64 = 600.0;
+const PROPELLER_FLIP_INTERVAL_START: f64 = 45.0;
+const PROPELLER_FLIP_INTERVAL_END: f64 = 160.0;
+const PROPELLER_SPIN_DECAY_TIME: f64 = 1_500.0;
+
+// Dizziness from rapid facing changes.
+const DIZZY_DIRECTION_CHANGE_COUNT: u32 = 8;
+const DIZZY_DIRECTION_CHANGE_MAX_INTERVAL: u64 = 600;
 
 // Pong
 const PONG_BALL_SPEED: f64 = 420.0;
@@ -777,6 +815,29 @@ fn blinks(state: State, frame: usize) -> bool {
         && (state != State::ButtonPress || frame + 1 != frame_durations(State::ButtonPress).len())
 }
 
+/// Continuous throw rotation with self-righting, mirroring the plugin's
+/// `getChatPetThrowRotation`. The pet tumbles proportional to horizontal travel
+/// and snaps back upright as its vertical velocity approaches zero.
+fn throw_rotation_step(rotation: f64, horizontal: f64, vy: f64, elapsed: f64) -> f64 {
+    let self_righting = ((vy - THROW_SELF_RIGHTING_START_VELOCITY) / -THROW_SELF_RIGHTING_START_VELOCITY)
+        .clamp(0.0, 1.0);
+    let next = rotation + horizontal * THROW_ROTATION_PER_PIXEL * (1.0 - self_righting);
+    let upright = if horizontal > 0.0 {
+        (next / 360.0).ceil() * 360.0
+    } else if horizontal < 0.0 {
+        (next / 360.0).floor() * 360.0
+    } else {
+        (next / 360.0).round() * 360.0
+    };
+    let delta = upright - next;
+    let max_correction = THROW_SELF_RIGHTING_SPEED * elapsed.max(0.0) * self_righting;
+    if delta.abs() <= max_correction {
+        upright
+    } else {
+        next + delta.signum() * max_correction
+    }
+}
+
 /// Renders the eyes layer, faithfully mirroring the plugin's `.chat-pet-eyes`
 /// overlay: only visible when the state tracks the cursor or is a blink state,
 /// the pupil color is `getChatPetEyeColor`, and gaze shifts it by 2px per unit.
@@ -871,6 +932,7 @@ pub struct Pet {
 
     base_state: State,
     transient: Option<(State, u64)>,
+    last_click: Option<State>,
     dragging: bool,
     facing: Facing,
     gaze: (f64, f64),
@@ -894,8 +956,13 @@ pub struct Pet {
     last_dir_change: u64,
     dir_change_count: u32,
 
+    // propeller-hat wiggle (rapid facing switches that wind up the lift)
+    propeller_wiggle_count: u32,
+    propeller_wiggle_last: u64,
+
     // wizard
     wizard_invisible_until: u64,
+    wizard_next_episode: u64,
 
     // april fools
     pub april_fools: bool,
@@ -919,6 +986,10 @@ struct ThrowMotion {
     vx: f64,
     vy: f64,
     start: u64,
+    last_frame: u64,
+    rotation: f64,
+    spin_elapsed: f64,
+    flip_accumulator: f64,
     spinner: bool,
     propeller: bool,
     propeller_lift: bool,
@@ -950,6 +1021,7 @@ impl Pet {
             accessory: cfg.accessory,
             base_state: State::Idle,
             transient: None,
+            last_click: None,
             dragging: false,
             facing: Facing::Right,
             gaze: (0.0, 0.0),
@@ -965,7 +1037,10 @@ impl Pet {
             last_dir: None,
             last_dir_change: 0,
             dir_change_count: 0,
+            propeller_wiggle_count: 0,
+            propeller_wiggle_last: 0,
             wizard_invisible_until: 0,
+            wizard_next_episode: 0,
             april_fools,
             gravity_pose: false,
             pong: None,
@@ -1056,9 +1131,9 @@ impl Pet {
             if let Some((cx, _)) = cursor {
                 let center = self.left + self.display() / 2.0;
                 if cx < center {
-                    self.facing = Facing::Left;
+                    self.set_facing(Facing::Left, now);
                 } else if cx > center {
-                    self.facing = Facing::Right;
+                    self.set_facing(Facing::Right, now);
                 }
             }
         }
@@ -1169,14 +1244,151 @@ impl Pet {
     }
 
     fn throw_rotation(&self, now: u64) -> f64 {
-        let _ = (self.throw.as_ref(), now);
-        0.0 // rotation omitted in the native v1; pet stays upright mid-air
+        let _ = now;
+        match &self.throw {
+            // Helicopter lift: the body stays upright the whole flight.
+            Some(t) if t.propeller_lift => 0.0,
+            // Bamboo copter: head-down while rising, upright while gliding down.
+            Some(t) if t.spinner || t.propeller => {
+                if t.vy < 0.0 {
+                    SPINNER_ASCENT_ROTATION
+                } else {
+                    0.0
+                }
+            }
+            Some(t) => t.rotation,
+            None => 0.0,
+        }
     }
 
     fn set_state(&mut self, state: State, now: u64) {
         if self.anim_state != state {
             self.anim_state = state;
             self.anim_start = now;
+        }
+    }
+
+    /// Sets the facing and records the direction change (mirrors the plugin's
+    /// `updateGaze` -> `recordDirectionChange`): rapid changes trigger either
+    /// the propeller-hat lift or dizziness.
+    fn set_facing(&mut self, facing: Facing, now: u64) {
+        if self.facing == facing {
+            return;
+        }
+        self.facing = facing;
+        self.record_direction_change(now);
+    }
+
+    /// Directly flips the sprite, used by the airborne "spins" (bamboo copter
+    /// and helicopter lift). These are visual and must not count toward dizzy.
+    fn flip_facing(&mut self) {
+        self.facing = if self.facing == Facing::Left {
+            Facing::Right
+        } else {
+            Facing::Left
+        };
+    }
+
+    fn record_direction_change(&mut self, now: u64) {
+        // Propeller hat: rapid mouse-driven facing switches wind the propeller
+        // up and lift the pet instead of making it dizzy (disabled while
+        // airborne, dragging, on the run, or on April Fools').
+        if self.accessory.as_deref() == Some("propellerHat")
+            && self.throw.is_none()
+            && self.pong.is_none()
+            && !self.dragging
+            && !self.on_the_run
+            && !self.april_fools
+        {
+            if self.propeller_wiggle_last != 0
+                && now.saturating_sub(self.propeller_wiggle_last) > PROPELLER_WIGGLE_MAX_INTERVAL
+            {
+                self.propeller_wiggle_count = 0;
+            }
+            self.propeller_wiggle_last = now;
+            self.propeller_wiggle_count += 1;
+            if self.propeller_wiggle_count >= PROPELLER_WIGGLE_COUNT {
+                self.propeller_wiggle_count = 0;
+                self.propeller_wiggle_last = 0;
+                self.begin_propeller_lift(now);
+            }
+            return;
+        }
+        // DirectionChangeController: 8 direction changes within the window
+        // makes the pet dizzy.
+        match self.last_dir {
+            None => {
+                self.last_dir = Some(self.facing);
+                self.last_dir_change = now;
+            }
+            Some(prev) => {
+                if prev == self.facing {
+                    return;
+                }
+                if now.saturating_sub(self.last_dir_change) > DIZZY_DIRECTION_CHANGE_MAX_INTERVAL {
+                    self.dir_change_count = 0;
+                }
+                self.last_dir = Some(self.facing);
+                self.last_dir_change = now;
+                self.dir_change_count += 1;
+                if self.dir_change_count >= DIZZY_DIRECTION_CHANGE_COUNT {
+                    self.last_dir = None;
+                    self.dir_change_count = 0;
+                    self.last_dir_change = 0;
+                    if self.throw.is_none() && self.pong.is_none() && !self.dragging {
+                        self.wake(now);
+                        self.transient = Some((State::Dizzy, now + DIZZY_DURATION));
+                        self.set_state(State::Dizzy, now);
+                    }
+                }
+            }
+        }
+    }
+
+    fn begin_propeller_lift(&mut self, now: u64) {
+        self.wake(now);
+        self.begin_throw(0.0, PROPELLER_LIFT_UPWARD_VELOCITY, now, true);
+    }
+
+    fn schedule_wizard_invisibility(&mut self, now: u64) {
+        if self.accessory.as_deref() != Some("wizardHat") {
+            return;
+        }
+        if self.halloween {
+            return;
+        }
+        // No hat special features on April Fools', except inside a pong game.
+        if self.april_fools && self.pong.is_none() {
+            return;
+        }
+        self.wizard_next_episode = now
+            + WIZARD_INVISIBLE_MIN_INTERVAL
+            + (self.rng() * (WIZARD_INVISIBLE_MAX_INTERVAL - WIZARD_INVISIBLE_MIN_INTERVAL) as f64)
+                as u64;
+    }
+
+    fn step_wizard(&mut self, now: u64) {
+        if self.accessory.as_deref() != Some("wizardHat") {
+            self.wizard_invisible_until = 0;
+            self.wizard_next_episode = 0;
+            return;
+        }
+        if self.wizard_invisible_until != 0 {
+            // Episode ends: go visible again and schedule the next one.
+            if now >= self.wizard_invisible_until {
+                self.wizard_invisible_until = 0;
+                self.schedule_wizard_invisibility(now);
+            }
+        } else if self.wizard_next_episode == 0 {
+            self.schedule_wizard_invisibility(now);
+        } else if now >= self.wizard_next_episode {
+            self.wizard_next_episode = 0;
+            // Don't vanish mid-nap or while on the run; try again later.
+            if self.base_state == State::Sleep || self.on_the_run {
+                self.schedule_wizard_invisibility(now);
+            } else {
+                self.wizard_invisible_until = now + WIZARD_INVISIBLE_DURATION;
+            }
         }
     }
 
@@ -1211,7 +1423,8 @@ impl Pet {
         if self.throw.is_some() {
             return;
         }
-        let party = self.accessory.as_deref() == Some("partyHat");
+        let party = self.accessory.as_deref() == Some("partyHat")
+            || self.accessory.as_deref() == Some("pinkPartyHat");
         let r = self.rng();
         let spin = if party { PARTY_HAT_SPIN_CHANCE } else { ICON_TRANSFORMATION_CHANCE };
         let yapping = if party { PARTY_HAT_YAPPING_CHANCE } else { YAPPING_CHANCE };
@@ -1223,10 +1436,27 @@ impl Pet {
         } else if r < spin + yapping + sing {
             State::Sing
         } else {
-            let choices = [State::ButtonPress, State::Love, State::Cool, State::Speechless, State::Worry];
+            // Mirrors `getChatPetClickInteraction`: pick from the remaining
+            // interactions, excluding the previous one (no immediate repeat)
+            // and excluding `sing` while wearing a party hat.
+            let mut choices = vec![
+                State::ButtonPress,
+                State::Love,
+                State::Cool,
+                State::Sing,
+                State::Speechless,
+                State::Worry,
+            ];
+            if let Some(prev) = self.last_click {
+                choices.retain(|&c| c != prev);
+            }
+            if party {
+                choices.retain(|&c| c != State::Sing);
+            }
             let rest = (r - spin - yapping - sing) / (1.0 - spin - yapping - sing);
             choices[((rest * choices.len() as f64) as usize).min(choices.len() - 1)]
         };
+        self.last_click = Some(state);
         let dur = transient_duration(state);
         self.transient = Some((state, now + dur));
         self.set_state(state, now);
@@ -1257,7 +1487,7 @@ impl Pet {
         if speed >= THROW_MIN_VELOCITY {
             let s = THROW_MAX_VELOCITY / speed;
             let v = if s < 1.0 { s } else { 1.0 };
-            self.begin_throw(vx * v, vy * v, now);
+            self.begin_throw(vx * v, vy * v, now, false);
         } else {
             self.finish_throw(now);
         }
@@ -1274,23 +1504,31 @@ impl Pet {
         }
     }
 
-    fn begin_throw(&mut self, vx: f64, vy: f64, now: u64) {
+    fn begin_throw(&mut self, vx: f64, vy: f64, now: u64, propeller_lift: bool) {
         // April Fools': a mouse throw starts pong.
         if self.april_fools {
             self.start_pong(now, vx, vy);
             return;
         }
-        let spinner = self.accessory.as_deref() == Some("spinnerHat") && vy < 0.0;
-        let propeller = self.accessory.as_deref() == Some("propellerHat") && vy < 0.0;
+        let spinner = !propeller_lift
+            && self.accessory.as_deref() == Some("spinnerHat")
+            && vy < 0.0;
+        let propeller = !propeller_lift
+            && self.accessory.as_deref() == Some("propellerHat")
+            && vy < 0.0;
         self.throw = Some(ThrowMotion {
             left: self.left,
             top: self.top,
             vx,
             vy,
             start: now,
+            last_frame: now,
+            rotation: 0.0,
+            spin_elapsed: 0.0,
+            flip_accumulator: 0.0,
             spinner,
             propeller,
-            propeller_lift: false,
+            propeller_lift,
             grace_until: now + MOUSE_BOUNCE_RELEASE_GRACE,
             mouse_bounce_armed: false,
             cursor_contacting: false,
@@ -1328,10 +1566,9 @@ impl Pet {
                 }
             }
         }
-        // Wizard invisibility expiry
-        if now < self.wizard_invisible_until {
-            // active
-        }
+        // Wizard invisibility: periodic episodes while wearing the wizard hat
+        // (mirrors `scheduleWizardInvisibility` / `setWizardInvisible`).
+        self.step_wizard(now);
 
         // Throw physics
         if let Some(t) = self.throw.take() {
@@ -1351,31 +1588,75 @@ impl Pet {
     }
 
     fn step_throw(&mut self, mut t: ThrowMotion, now: u64, cursor: Option<(f64, f64)>) {
-        let elapsed = (now.saturating_sub(t.start)).min(32) as f64 / 1000.0;
+        // A wall impact freezes the flight for a beat, then resumes falling.
+        if t.wall_impact_until != 0 {
+            if now < t.wall_impact_until {
+                self.throw = Some(t);
+                return;
+            }
+            t.wall_impact_until = 0;
+            self.set_state(State::Falling, now);
+        }
+
+        let elapsed_ms = now.saturating_sub(t.last_frame).min(THROW_MAX_FRAME_DURATION) as f64;
+        t.last_frame = now;
+        let elapsed = elapsed_ms / 1000.0;
+
         let gravity = if t.propeller_lift {
-            if t.vy < 0.0 { 5_400.0 } else { 600.0 }
+            if t.vy < 0.0 {
+                PROPELLER_ASCENT_DECELERATION
+            } else {
+                PROPELLER_DESCENT_GRAVITY
+            }
         } else if t.spinner {
-            if t.vy < 0.0 { 3_600.0 } else { 600.0 }
+            if t.vy < 0.0 {
+                SPINNER_ASCENT_GRAVITY
+            } else {
+                SPINNER_DESCENT_GRAVITY
+            }
         } else if t.propeller {
-            if t.vy < 0.0 { 5_400.0 } else { 950.0 }
+            if t.vy < 0.0 {
+                PROPELLER_THROW_ASCENT_GRAVITY
+            } else {
+                PROPELLER_THROW_DESCENT_GRAVITY
+            }
         } else {
             THROW_GRAVITY
         };
 
+        let prev_left = t.left;
         t.left += t.vx * elapsed;
         t.top += t.vy * elapsed + 0.5 * gravity * elapsed * elapsed;
         t.vy += gravity * elapsed;
+        let horizontal = t.left - prev_left;
 
-        // Wall bounce
+        // Wizard hat: after a short grace, every airborne moment may teleport
+        // the pet to the upper half, preserving its velocity.
+        if self.accessory.as_deref() == Some("wizardHat")
+            && now.saturating_sub(t.start) >= WIZARD_TELEPORT_GRACE
+        {
+            let chance = 1.0 - (-WIZARD_TELEPORT_CHANCE_PER_SECOND * elapsed).exp();
+            if self.rng() < chance {
+                let half_top = (self.max_top() - self.display()).max(0.0) / 2.0;
+                t.top = self.rng() * half_top;
+                t.left = self.rng() * self.max_left();
+            }
+        }
+
+        // Wall bounce (brief impact pose, then a rebound).
         let max_left = self.max_left();
         if t.left < 0.0 {
             t.left = 0.0;
             t.vx = -t.vx * THROW_WALL_RESTITUTION;
-            self.wall_impact(now);
+            t.wall_impact_until = now + WALL_IMPACT_DURATION;
+            self.set_state(State::WallImpact, now);
+            self.facing = Facing::Left;
         } else if t.left > max_left {
             t.left = max_left;
             t.vx = -t.vx * THROW_WALL_RESTITUTION;
-            self.wall_impact(now);
+            t.wall_impact_until = now + WALL_IMPACT_DURATION;
+            self.set_state(State::WallImpact, now);
+            self.facing = Facing::Right;
         }
         // Ceiling
         if t.top < 0.0 {
@@ -1383,16 +1664,32 @@ impl Pet {
             t.vy = t.vy.abs() * THROW_CEILING_RESTITUTION;
         }
 
-        // Mouse bounce
-        if now >= t.grace_until {
+        // Mouse bounce (normal throws only; spinner/propeller glides ignore it).
+        let glide = t.spinner || t.propeller || t.propeller_lift;
+        if !glide && now >= t.grace_until {
             if let Some((cx, cy)) = cursor {
-                let contacting = cx >= t.left && cx <= t.left + self.display() && cy >= t.top && cy <= t.top + self.display();
+                let contacting = cx >= t.left
+                    && cx <= t.left + self.display()
+                    && cy >= t.top
+                    && cy <= t.top + self.display();
                 if t.mouse_bounce_armed && !t.cursor_contacting && contacting && t.vy > 0.0 {
-                    let pointer_vx: f64 = 0.0; // simplified: no cursor velocity tracking in native v1
+                    // No cursor-velocity tracking yet (native v1), but the edge
+                    // kick and restitution mirror `getChatPetMouseBounceVelocity`.
+                    let pointer_vx: f64 = 0.0;
                     let pointer_vy: f64 = 0.0;
-                    let mut hv = t.vx * MOUSE_BOUNCE_H_RETENTION + pointer_vx * MOUSE_BOUNCE_H_TRANSFER;
-                    hv = hv.clamp(-MOUSE_BOUNCE_MAX_H, MOUSE_BOUNCE_MAX_H);
-                    let uv = (t.vy * MOUSE_BOUNCE_V_RESTITUTION + pointer_vy.max(0.0) * MOUSE_BOUNCE_UP_TRANSFER).max(MOUSE_BOUNCE_MIN_UP);
+                    let pet_center = t.left + self.display() / 2.0;
+                    let offset = if self.display() > 0.0 {
+                        ((pet_center - cx) / (self.display() / 2.0)).clamp(-1.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let hv = (t.vx * MOUSE_BOUNCE_H_RETENTION
+                        + pointer_vx * MOUSE_BOUNCE_H_TRANSFER
+                        + offset * MOUSE_BOUNCE_EDGE_KICK)
+                        .clamp(-MOUSE_BOUNCE_MAX_H, MOUSE_BOUNCE_MAX_H);
+                    let uv = (t.vy.max(0.0) * MOUSE_BOUNCE_V_RESTITUTION
+                        + (-pointer_vy).max(0.0) * MOUSE_BOUNCE_UP_TRANSFER)
+                        .max(MOUSE_BOUNCE_MIN_UP);
                     t.vx = hv;
                     t.vy = -uv.min(MOUSE_BOUNCE_MAX_UP);
                     self.bounce_count += 1;
@@ -1403,6 +1700,41 @@ impl Pet {
                     t.mouse_bounce_armed = true;
                 }
             }
+        }
+
+        // Body orientation while airborne.
+        if t.propeller_lift {
+            // Helicopter lift: the body stays upright while the propeller
+            // "spins" it via rapid left/right swaps, slowing down over time.
+            t.spin_elapsed += elapsed_ms;
+            let progress = (t.spin_elapsed / PROPELLER_SPIN_DECAY_TIME).min(1.0);
+            let flip_interval = PROPELLER_FLIP_INTERVAL_START
+                + (PROPELLER_FLIP_INTERVAL_END - PROPELLER_FLIP_INTERVAL_START) * progress;
+            t.flip_accumulator += elapsed_ms;
+            while t.flip_accumulator >= flip_interval {
+                t.flip_accumulator -= flip_interval;
+                self.flip_facing();
+            }
+        } else if t.spinner || t.propeller {
+            // Bamboo copter: head-down while rising; on the way down the body
+            // "spins" by rapidly swapping the left/right sprite.
+            if t.vy < 0.0 {
+                t.flip_accumulator = 0.0;
+            } else {
+                let flip_interval = if t.propeller {
+                    PROPELLER_THROW_FLIP_INTERVAL
+                } else {
+                    SPINNER_FLIP_INTERVAL
+                };
+                t.flip_accumulator += elapsed_ms;
+                while t.flip_accumulator >= flip_interval {
+                    t.flip_accumulator -= flip_interval;
+                    self.flip_facing();
+                }
+            }
+        } else {
+            // Normal throw: continuous rotation with self-righting near the end.
+            t.rotation = throw_rotation_step(t.rotation, horizontal, t.vy, elapsed);
         }
 
         self.left = t.left;
@@ -1426,10 +1758,6 @@ impl Pet {
         } else {
             self.throw = Some(t);
         }
-    }
-
-    fn wall_impact(&mut self, now: u64) {
-        self.set_state(State::WallImpact, now);
     }
 
     fn start_pong(&mut self, now: u64, vx: f64, vy: f64) {
@@ -1513,8 +1841,11 @@ impl Pet {
         self.color = c;
     }
 
-    pub fn set_accessory(&mut self, id: Option<String>) {
+    pub fn set_accessory(&mut self, id: Option<String>, now: u64) {
         self.accessory = id;
+        self.wizard_invisible_until = 0;
+        self.wizard_next_episode = 0;
+        self.schedule_wizard_invisibility(now);
     }
 
     pub fn toggle_run(&mut self, now: u64) {

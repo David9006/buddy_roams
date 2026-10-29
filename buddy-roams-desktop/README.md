@@ -64,7 +64,8 @@ cargo run --release
 
 - 只覆盖主显示器；多显示器漫游待实现。
 - DPI 缩放尚未按系统 DPI 适配（宠物固定 48px 逻辑尺寸）。
-- 抛掷过程中的连续旋转、20 连击彩带、语音气泡为后续项；愚人节 pong 为初版实现。
+- 抛掷连续旋转已实现；20 连击彩带、语音气泡、Go on the Run 的搜寻/回场动画为后续项；
+  愚人节 pong 为初版实现。
 - macOS / Linux 移植在计划中。
 
 ---
@@ -139,6 +140,7 @@ from an installed VS Code (`node scripts/extract-assets.mjs`).
 
 - Primary monitor only; multi-monitor roaming is planned.
 - DPI scaling not yet adapted (the pet keeps a fixed 48px logical size).
-- Continuous rotation during throws, the 20-bounce confetti burst, and the speech bubble are
-  follow-ups; the April Fools' pong is a first cut.
+- Continuous rotation during throws is implemented; the 20-bounce confetti burst, the speech
+  bubble, and Go on the Run's search/return animation are follow-ups; the April Fools' pong is a
+  first cut.
 - macOS / Linux ports are planned.
