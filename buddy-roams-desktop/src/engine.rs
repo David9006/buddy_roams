@@ -120,6 +120,11 @@ const CONFETTI_COLORS: [[u8; 3]; 6] = [
     [0xb1, 0x80, 0xd7],
 ];
 
+// Bounce combo counter (mirrors the plugin's `.chat-pet-bounce-counter`).
+const BOUNCE_RESULT_DURATION: u64 = 5_000;
+const BADGE_BACKGROUND: [u8; 3] = [0x1e, 0x1e, 0x1e];
+const BADGE_FOREGROUND: [u8; 3] = [0xff, 0xff, 0xff];
+
 // Periodic "thinking" episodes with the speech bubble (the desktop equivalent
 // of the extension's `rendering` state, which has no AI trigger here).
 const THINK_MIN_INTERVAL: u64 = 8_000;
@@ -610,6 +615,51 @@ fn fill_rect(dst: &mut Image, x: i64, y: i64, w: i64, h: i64, color: [u8; 3], al
     }
 }
 
+/// Fills a rounded rectangle (used for the combo counter badge), opaque.
+fn fill_rounded_rect(dst: &mut Image, x: i64, y: i64, w: i64, h: i64, r: i64, color: [u8; 3]) {
+    let r = r.max(0).min((w / 2).max(0)).min((h / 2).max(0));
+    // Corner circle centers.
+    let cx_l = x + r;
+    let cx_r = x + w - r;
+    let cy_t = y + r;
+    let cy_b = y + h - r;
+    for yy in y..y + h {
+        if yy < 0 || yy >= dst.height as i64 {
+            continue;
+        }
+        for xx in x..x + w {
+            if xx < 0 || xx >= dst.width as i64 {
+                continue;
+            }
+            let mut inside = true;
+            if xx < cx_l && yy < cy_t {
+                let dx = cx_l - xx;
+                let dy = cy_t - yy;
+                inside = dx * dx + dy * dy <= r * r;
+            } else if xx >= cx_r && yy < cy_t {
+                let dx = xx - cx_r + 1;
+                let dy = cy_t - yy;
+                inside = dx * dx + dy * dy <= r * r;
+            } else if xx < cx_l && yy >= cy_b {
+                let dx = cx_l - xx;
+                let dy = yy - cy_b + 1;
+                inside = dx * dx + dy * dy <= r * r;
+            } else if xx >= cx_r && yy >= cy_b {
+                let dx = xx - cx_r + 1;
+                let dy = yy - cy_b + 1;
+                inside = dx * dx + dy * dy <= r * r;
+            }
+            if inside {
+                let i = ((yy * dst.width as i64 + xx) * 4) as usize;
+                dst.rgba[i] = color[0];
+                dst.rgba[i + 1] = color[1];
+                dst.rgba[i + 2] = color[2];
+                dst.rgba[i + 3] = 255;
+            }
+        }
+    }
+}
+
 /// Frame index for a looping frame-duration table (shared by the pet body and
 /// the speech-bubble animation).
 fn frame_index_for(durs: &[u64], elapsed: u64) -> usize {
@@ -1072,6 +1122,9 @@ pub struct Pet {
     throw: Option<ThrowMotion>,
     bounce_count: u32,
     bounce_grace_until: u64,
+    // combo count shown briefly after landing (mirrors the plugin's counter)
+    bounce_result_count: u32,
+    bounce_result_until: u64,
 
     // direction-change dizzy tracking
     last_dir: Option<Facing>,
@@ -1198,6 +1251,8 @@ impl Pet {
             throw: None,
             bounce_count: 0,
             bounce_grace_until: 0,
+            bounce_result_count: 0,
+            bounce_result_until: 0,
             last_dir: None,
             last_dir_change: 0,
             dir_change_count: 0,
@@ -1437,25 +1492,37 @@ impl Pet {
             max_y = max_y.max(py + p.h as i64);
         }
 
-        // Pong hit count, drawn above the ball.
-        let score_px = (3.0 * self.scale * self.dpi_scale).round().max(1.0) as i64;
-        let score = if self.pong.is_some() && self.pong_score > 0 {
-            let text = self.pong_score.to_string();
-            let sw = text.len() as i64 * 4 * score_px;
-            let sh = 5 * score_px;
-            let sx = pet_x + pet_w / 2 - sw / 2;
-            let sy = pet_y - sh - (4.0 * self.scale * self.dpi_scale).round() as i64;
-            min_x = min_x.min(sx);
-            min_y = min_y.min(sy);
-            // +1 accounts for the digit drop shadow.
-            max_x = max_x.max(sx + sw + 1);
-            max_y = max_y.max(sy + sh + 1);
-            Some((text, sx, sy))
+        // Combo counter / pong score badge, mimicking the plugin's pill at the
+        // pet's top-right corner.
+        let badge_scale = self.scale * self.dpi_scale;
+        let badge_text = if self.pong.is_some() && self.pong_score > 0 {
+            Some(self.pong_score.to_string())
+        } else if self.throw.is_some() && self.bounce_count > 0 {
+            Some(self.bounce_count.to_string())
+        } else if self.bounce_result_until != 0
+            && now < self.bounce_result_until
+            && self.bounce_result_count > 0
+        {
+            Some(self.bounce_result_count.to_string())
         } else {
             None
         };
+        let mut badge: Option<(String, i64, i64, i64, i64, i64, i64)> = None;
+        if let Some(text) = &badge_text {
+            let digit_px = (3.0 * badge_scale).round().max(1.0) as i64;
+            let pad = (7.0 * badge_scale).round().max(1.0) as i64;
+            let pill_h = (20.0 * badge_scale).round().max(8.0) as i64;
+            let pill_w = text.len() as i64 * 4 * digit_px + 2 * pad;
+            let bx = pet_x + pet_w - pill_w / 2;
+            let by = pet_y - pill_h / 2;
+            min_x = min_x.min(bx);
+            min_y = min_y.min(by);
+            max_x = max_x.max(bx + pill_w);
+            max_y = max_y.max(by + pill_h);
+            badge = Some((text.clone(), bx, by, pill_w, pill_h, digit_px, pad));
+        }
 
-        if bubble.is_none() && self.confetti.is_empty() && score.is_none() {
+        if bubble.is_none() && self.confetti.is_empty() && badge.is_none() {
             return Some((pet_img, pet_x, pet_y));
         }
 
@@ -1498,10 +1565,27 @@ impl Pet {
                 (alpha * 255.0).round() as u8,
             );
         }
-        if let Some((text, sx, sy)) = &score {
-            // Dark shadow offset, then white digits on top.
-            draw_digits(&mut out, sx - min_x + 1, sy - min_y + 1, text, [0x00, 0x00, 0x00], score_px as u32);
-            draw_digits(&mut out, sx - min_x, sy - min_y, text, [0xff, 0xff, 0xff], score_px as u32);
+        if let Some((text, bx, by, pill_w, pill_h, digit_px, pad)) = &badge {
+            // Rounded pill background, then centered white digits.
+            fill_rounded_rect(
+                &mut out,
+                bx - min_x,
+                by - min_y,
+                *pill_w,
+                *pill_h,
+                *pill_h / 2,
+                BADGE_BACKGROUND,
+            );
+            let dx = bx + *pad;
+            let dy = by + (*pill_h - 5 * *digit_px) / 2;
+            draw_digits(
+                &mut out,
+                dx - min_x,
+                dy - min_y,
+                text,
+                BADGE_FOREGROUND,
+                *digit_px as u32,
+            );
         }
         Some((out, min_x, min_y))
     }
@@ -1874,6 +1958,8 @@ impl Pet {
             wall_impact_until: 0,
         });
         self.bounce_count = 0;
+        self.bounce_result_count = 0;
+        self.bounce_result_until = 0;
         self.set_state(State::Falling, now);
     }
 
@@ -2007,9 +2093,7 @@ impl Pet {
         self.confetti.retain(|p| now.saturating_sub(p.born) < p.life);
     }
 
-    fn spawn_confetti(&mut self, now: u64) {
-        let cx = self.left + self.display() / 2.0;
-        let cy = self.top + self.display() / 2.0;
+    fn spawn_confetti(&mut self, now: u64, cx: f64, cy: f64) {
         self.confetti.clear();
         for i in 0..CONFETTI_COUNT {
             let angle = (-160.0 + self.rng() * 140.0).to_radians();
@@ -2202,10 +2286,19 @@ impl Pet {
             || (!self.april_fools && t.top > floor_land && t.vy >= 0.0);
 
         if landed {
+            // Confetti bursts at landing once the streak reaches 20 (mirrors the
+            // plugin's `completeFall` -> `showBounceConfetti`).
             if self.bounce_count >= CONFETTI_SCORE {
-                self.spawn_confetti(now);
+                let cx = self.left + self.display() / 2.0;
+                let cy = self.top + self.display() / 2.0;
+                self.spawn_confetti(now, cx, cy);
             }
             self.finish_throw(now);
+            // Keep the combo count visible briefly after landing, then clear it.
+            if self.bounce_count > 0 {
+                self.bounce_result_count = self.bounce_count;
+                self.bounce_result_until = now + BOUNCE_RESULT_DURATION;
+            }
             self.bounce_count = 0;
         } else {
             self.throw = Some(t);
