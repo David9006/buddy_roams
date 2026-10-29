@@ -1201,11 +1201,12 @@ impl Pet {
             display_img = rotate_ccw90(&display_img);
         }
 
-        // Throw rotation.
+        // Throw rotation (negated so a positive accumulated angle rotates
+        // clockwise, matching the plugin's CSS `rotate()`).
         if self.throw.is_some() {
             let angle = self.throw_rotation(now);
             if angle != 0.0 {
-                display_img = rotate(&display_img, angle);
+                display_img = rotate(&display_img, -angle);
             }
         }
 
@@ -1489,7 +1490,9 @@ impl Pet {
             let v = if s < 1.0 { s } else { 1.0 };
             self.begin_throw(vx * v, vy * v, now, false);
         } else {
-            self.finish_throw(now);
+            // Slow release: a gentle fall from the release position (mirrors the
+            // plugin's `beginFall`), not an instant snap to the floor.
+            self.begin_throw(0.0, 0.0, now, false);
         }
     }
 
@@ -1546,7 +1549,7 @@ impl Pet {
         self.transient = Some((State::Splat, now + SPLAT_DURATION));
     }
 
-    pub fn tick(&mut self, now: u64, cursor: Option<(f64, f64)>) {
+    pub fn tick(&mut self, now: u64, cursor: Option<(f64, f64)>, cursor_velocity: (f64, f64)) {
         // Transient expiry
         if let Some((s, end)) = self.transient {
             if now >= end {
@@ -1572,7 +1575,7 @@ impl Pet {
 
         // Throw physics
         if let Some(t) = self.throw.take() {
-            self.step_throw(t, now, cursor);
+            self.step_throw(t, now, cursor, cursor_velocity);
         }
 
         // Pong
@@ -1587,7 +1590,13 @@ impl Pet {
         }
     }
 
-    fn step_throw(&mut self, mut t: ThrowMotion, now: u64, cursor: Option<(f64, f64)>) {
+    fn step_throw(
+        &mut self,
+        mut t: ThrowMotion,
+        now: u64,
+        cursor: Option<(f64, f64)>,
+        cursor_velocity: (f64, f64),
+    ) {
         // A wall impact freezes the flight for a beat, then resumes falling.
         if t.wall_impact_until != 0 {
             if now < t.wall_impact_until {
@@ -1673,10 +1682,10 @@ impl Pet {
                     && cy >= t.top
                     && cy <= t.top + self.display();
                 if t.mouse_bounce_armed && !t.cursor_contacting && contacting && t.vy > 0.0 {
-                    // No cursor-velocity tracking yet (native v1), but the edge
-                    // kick and restitution mirror `getChatPetMouseBounceVelocity`.
-                    let pointer_vx: f64 = 0.0;
-                    let pointer_vy: f64 = 0.0;
+                    // Mirrors `getChatPetMouseBounceVelocity`, including the
+                    // cursor's own velocity transfer and the edge kick.
+                    let pointer_vx = cursor_velocity.0;
+                    let pointer_vy = cursor_velocity.1;
                     let pet_center = t.left + self.display() / 2.0;
                     let offset = if self.display() > 0.0 {
                         ((pet_center - cx) / (self.display() / 2.0)).clamp(-1.0, 1.0)
@@ -1693,6 +1702,9 @@ impl Pet {
                     t.vx = hv;
                     t.vy = -uv.min(MOUSE_BOUNCE_MAX_UP);
                     self.bounce_count += 1;
+                    // Restart the 4s flight watchdog on each bounce (mirrors the
+                    // plugin's `beginBounceImpact` resetting `startTime`).
+                    t.start = now;
                     t.mouse_bounce_armed = false;
                 }
                 t.cursor_contacting = contacting;
@@ -1747,8 +1759,8 @@ impl Pet {
             self.max_top()
         };
         let landed = now.saturating_sub(t.start) >= THROW_MAX_DURATION
-            || (self.april_fools && t.left >= floor_land && t.vx >= 0.0)
-            || (!self.april_fools && t.top >= floor_land && t.vy >= 0.0);
+            || (self.april_fools && t.left > floor_land && t.vx >= 0.0)
+            || (!self.april_fools && t.top > floor_land && t.vy >= 0.0);
 
         if landed {
             self.finish_throw(now);

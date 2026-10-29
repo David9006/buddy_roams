@@ -85,6 +85,7 @@ struct App {
     mouse_down_at: u64,
     mouse_down_pos: (f64, f64),
     drag_samples: Vec<(f64, f64, u64)>,
+    cursor_samples: Vec<(f64, f64, u64)>,
 }
 
 thread_local! {
@@ -483,6 +484,18 @@ fn drag_velocity(samples: &[(f64, f64, u64)], release: u64) -> (f64, f64) {
     ((last.0 - first.0) / elapsed * 1000.0, (last.1 - first.1) / elapsed * 1000.0)
 }
 
+/// Velocity of the cursor from the recent sample history, used to transfer the
+/// pointer's own motion into a mouse bounce.
+fn sample_velocity(samples: &[(f64, f64, u64)]) -> (f64, f64) {
+    if samples.len() < 2 {
+        return (0.0, 0.0);
+    }
+    let first = *samples.first().unwrap();
+    let last = *samples.last().unwrap();
+    let elapsed = (last.2 - first.2).max(16) as f64;
+    ((last.0 - first.0) / elapsed * 1000.0, (last.1 - first.1) / elapsed * 1000.0)
+}
+
 unsafe fn handle_command(hwnd: HWND, id: usize) {
     APP.with(|cell| {
         let mut app = cell.borrow_mut();
@@ -548,8 +561,17 @@ unsafe fn tick_and_render(a: &mut App) {
     let _ = GetCursorPos(&mut pt);
     let cursor = Some((pt.x as f64, pt.y as f64));
 
-    a.pet.tick(now_ms(), cursor);
-    let frame = a.pet.render(now_ms(), cursor);
+    // Track the cursor's recent positions to derive its velocity, so mouse
+    // bounces can transfer the pointer's own motion (plugin parity).
+    let now = now_ms();
+    a.cursor_samples.push((pt.x as f64, pt.y as f64, now));
+    while a.cursor_samples.len() > 2 && now - a.cursor_samples[0].2 > 100 {
+        a.cursor_samples.remove(0);
+    }
+    let cursor_velocity = sample_velocity(&a.cursor_samples);
+
+    a.pet.tick(now, cursor, cursor_velocity);
+    let frame = a.pet.render(now, cursor);
 
     let hidden = a.pet.on_the_run;
     if hidden != !a.visible {
@@ -612,6 +634,7 @@ fn main() {
                 mouse_down_at: 0,
                 mouse_down_pos: (0.0, 0.0),
                 drag_samples: Vec::new(),
+                cursor_samples: Vec::new(),
             });
         });
 
