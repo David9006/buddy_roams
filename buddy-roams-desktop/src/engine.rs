@@ -1,6 +1,8 @@
 //! The Buddy pet engine: state machine, physics, rendering, accessories and
 //! festival logic, ported from the VS Code chat pet to native Rust.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::assets::{asset, Image};
 
 // ---------------------------------------------------------------------------
@@ -102,6 +104,35 @@ const DIZZY_DIRECTION_CHANGE_MAX_INTERVAL: u64 = 600;
 const PONG_BALL_SPEED: f64 = 420.0;
 const PONG_PADDLE_WIDTH: f64 = 14.0;
 const PONG_PADDLE_HEIGHT: f64 = 110.0;
+const PONG_MAX_ANGLE: f64 = 60.0; // deg
+const PONG_SPIN_RATE: f64 = 0.45; // deg/ms, matches the plugin's ball spin
+
+// Confetti (20-bounce celebration).
+const CONFETTI_COUNT: usize = 24;
+const CONFETTI_GRAVITY: f64 = 600.0;
+const CONFETTI_LIFE_MS: u64 = 2_000;
+const CONFETTI_COLORS: [[u8; 3]; 6] = [
+    [0xf1, 0x4c, 0x4c],
+    [0xca, 0x66, 0x36],
+    [0xf9, 0xa8, 0x25],
+    [0x4c, 0xaf, 0x50],
+    [0x37, 0x94, 0xff],
+    [0xb1, 0x80, 0xd7],
+];
+
+// Periodic "thinking" episodes with the speech bubble (the desktop equivalent
+// of the extension's `rendering` state, which has no AI trigger here).
+const THINK_MIN_INTERVAL: u64 = 8_000;
+const THINK_MAX_INTERVAL: u64 = 16_000;
+const RENDER_DURATION: u64 = 2_600;
+
+// Speech bubble (animated, mirrors SPEECH_FRAME_DURATIONS from the plugin).
+const SPEECH_FRAME_DURATIONS: &[u64] = &[220, 220, 220, 100, 160, 180];
+
+// Go on the Run: the pet plays the `search` animation while running away or
+// returning before the window hides/shows.
+const SEARCH_FRAME_DURATIONS: &[u64] = &[500, 500, 500, 500];
+const SEARCH_DURATION: u64 = 2_000;
 
 // ---------------------------------------------------------------------------
 // States and frame tables
@@ -125,6 +156,7 @@ pub enum State {
     WallImpact,
     Yapping,
     Complete,
+    Searching,
 }
 
 fn frame_durations(state: State) -> &'static [u64] {
@@ -144,6 +176,7 @@ fn frame_durations(state: State) -> &'static [u64] {
         State::Dizzy => &[120; 8],
         State::WallImpact | State::Yapping => &[],
         State::Complete => &[40; 50],
+        State::Searching => SEARCH_FRAME_DURATIONS,
     }
 }
 
@@ -181,6 +214,7 @@ fn sprite_name(state: State, variant: &str) -> String {
         State::Sing => "buddy-sing",
         State::Speechless => "buddy-speechless",
         State::Worry => "buddy-worry",
+        State::Searching => "buddy-search",
         _ => "buddy-idle",
     };
     format!("{}-{}", base, variant)
@@ -212,6 +246,7 @@ fn tracks_cursor(state: State) -> bool {
             | State::Falling
             | State::WallImpact
             | State::Splat
+            | State::Searching
     )
 }
 
@@ -542,6 +577,90 @@ fn mirror(img: &Image) -> Image {
         height: img.height,
         rgba: out,
     }
+}
+
+/// Fills an axis-aligned rectangle with a solid color at the given opacity,
+/// alpha-blending over whatever is already in `dst`.
+fn fill_rect(dst: &mut Image, x: i64, y: i64, w: i64, h: i64, color: [u8; 3], alpha: u8) {
+    let sa = alpha as u32;
+    if sa == 0 {
+        return;
+    }
+    for yy in y..y + h {
+        if yy < 0 || yy >= dst.height as i64 {
+            continue;
+        }
+        for xx in x..x + w {
+            if xx < 0 || xx >= dst.width as i64 {
+                continue;
+            }
+            let i = ((yy * dst.width as i64 + xx) * 4) as usize;
+            let da = dst.rgba[i + 3] as u32;
+            let out_a = sa + da * (255 - sa) / 255;
+            if out_a == 0 {
+                continue;
+            }
+            for c in 0..3 {
+                let s = color[c] as u32;
+                let d = dst.rgba[i + c] as u32;
+                dst.rgba[i + c] = ((s * sa + d * da * (255 - sa) / 255) / out_a) as u8;
+            }
+            dst.rgba[i + 3] = out_a as u8;
+        }
+    }
+}
+
+/// Frame index for a looping frame-duration table (shared by the pet body and
+/// the speech-bubble animation).
+fn frame_index_for(durs: &[u64], elapsed: u64) -> usize {
+    if durs.is_empty() {
+        return 0;
+    }
+    let total: u64 = durs.iter().sum();
+    let mut e = elapsed % total;
+    for (i, d) in durs.iter().enumerate() {
+        if e < *d {
+            return i;
+        }
+        e -= d;
+    }
+    durs.len() - 1
+}
+
+/// 3x5 pixel-digit patterns (bit 2 = left column, bit 0 = right column).
+fn digit_pattern(d: u8) -> [u8; 5] {
+    match d {
+        b'0' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        b'1' => [0b010, 0b110, 0b010, 0b010, 0b111],
+        b'2' => [0b111, 0b001, 0b111, 0b100, 0b111],
+        b'3' => [0b111, 0b001, 0b111, 0b001, 0b111],
+        b'4' => [0b101, 0b101, 0b111, 0b001, 0b001],
+        b'5' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        b'6' => [0b111, 0b100, 0b111, 0b101, 0b111],
+        b'7' => [0b111, 0b001, 0b010, 0b010, 0b010],
+        b'8' => [0b111, 0b101, 0b111, 0b101, 0b111],
+        b'9' => [0b111, 0b101, 0b111, 0b001, 0b111],
+        _ => [0, 0, 0, 0, 0],
+    }
+}
+
+/// Draws a decimal string as tiny 3x5 digits at pixel size `px`, returning the
+/// total width drawn.
+fn draw_digits(dst: &mut Image, x: i64, y: i64, text: &str, color: [u8; 3], px: u32) -> i64 {
+    let p = px.max(1) as i64;
+    let mut ox = x;
+    for ch in text.bytes() {
+        let pat = digit_pattern(ch);
+        for (r, row) in pat.iter().enumerate() {
+            for c in 0..3 {
+                if row & (1 << (2 - c)) != 0 {
+                    fill_rect(dst, ox + c as i64 * p, y + r as i64 * p, p, p, color, 255);
+                }
+            }
+        }
+        ox += 4 * p;
+    }
+    ox - x
 }
 
 fn scale_nearest(img: &Image, w: u32, h: u32) -> Image {
@@ -976,6 +1095,17 @@ pub struct Pet {
 
     // go on the run
     pub on_the_run: bool,
+    // While non-zero, the pet is playing the run-away / return `search`
+    // animation; when it expires, `search_target_run` is applied.
+    search_until: u64,
+    search_target_run: bool,
+
+    // periodic "thinking" (rendering) episodes with the speech bubble
+    next_think: u64,
+
+    // confetti particles (20-bounce celebration)
+    confetti: Vec<ConfettiParticle>,
+    confetti_last: u64,
 
     // halloween
     pub halloween: bool,
@@ -1008,18 +1138,49 @@ struct Pong {
     vx: f64,
     vy: f64,
     paddle_y: f64,
-    pre_game_until: u64,
+    start: u64,
+    last_frame: u64,
+    rotation: f64,
+}
+
+struct ConfettiParticle {
+    x: f64,
+    y: f64,
+    vx: f64,
+    vy: f64,
+    w: u32,
+    h: u32,
+    color: [u8; 3],
+    born: u64,
+    life: u64,
+}
+
+/// Time-based seed so the spawn point and interaction randomness differ between
+/// launches (the previous fixed seed made the "random" spawn deterministic).
+fn random_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9e3779b97f4a7c15)
+        .max(1)
 }
 
 impl Pet {
-    pub fn new(floor: f64, screen_w: f64, cfg: Config, april_fools: bool, halloween: bool) -> Self {
+    pub fn new(
+        floor: f64,
+        screen_w: f64,
+        cfg: Config,
+        april_fools: bool,
+        halloween: bool,
+        dpi_scale: f64,
+    ) -> Self {
         let mut p = Pet {
             left: 0.0,
             top: 0.0,
             floor,
             screen_w,
             scale: cfg.scale.max(MIN_SCALE),
-            dpi_scale: 1.0,
+            dpi_scale: dpi_scale.max(1.0),
             color: cfg.color,
             accessory: cfg.accessory,
             base_state: State::Idle,
@@ -1049,8 +1210,13 @@ impl Pet {
             pong: None,
             pong_score: 0,
             on_the_run: false,
+            search_until: 0,
+            search_target_run: false,
+            next_think: 0,
+            confetti: Vec::new(),
+            confetti_last: 0,
             halloween,
-            rng_state: 0x9e3779b97f4a7c15,
+            rng_state: random_seed(),
         };
         if let Some(x) = cfg.position_x {
             p.left = x;
@@ -1213,6 +1379,12 @@ impl Pet {
             }
         }
 
+        // Pong ball rotation.
+        let pong_rotation = self.pong.as_ref().map(|p| p.rotation).unwrap_or(0.0);
+        if pong_rotation != 0.0 {
+            display_img = rotate(&display_img, -pong_rotation);
+        }
+
         // Position: center the composite over the display box.
         let w = display_img.width as i64;
         let h = display_img.height as i64;
@@ -1220,7 +1392,151 @@ impl Pet {
         let bottom = self.top + self.display();
         let x = (cx - w as f64 / 2.0).round() as i64;
         let y = (bottom - h as f64).round() as i64;
-        Some((display_img, x, y))
+
+        // Composite the pet with any extra layers (speech bubble, confetti) into
+        // one output image spanning the union of their bounding boxes.
+        self.compose_with_extras(display_img, x, y, now)
+    }
+
+    /// Draws the pet image plus the speech bubble and confetti particles (when
+    /// present) into a single image, returning it and its top-left screen offset.
+    fn compose_with_extras(
+        &self,
+        pet_img: Image,
+        pet_x: i64,
+        pet_y: i64,
+        now: u64,
+    ) -> Option<(Image, i64, i64)> {
+        let pet_w = pet_img.width as i64;
+        let pet_h = pet_img.height as i64;
+        let mut min_x = pet_x;
+        let mut min_y = pet_y;
+        let mut max_x = pet_x + pet_w;
+        let mut max_y = pet_y + pet_h;
+
+        // Speech bubble above the pet while "thinking" (rendering).
+        let bubble = if self.anim_state == State::Rendering && !self.dragging {
+            self.speech_bubble(now, pet_x, pet_y)
+        } else {
+            None
+        };
+        if let Some((bimg, bx, by)) = &bubble {
+            min_x = min_x.min(*bx);
+            min_y = min_y.min(*by);
+            max_x = max_x.max(bx + bimg.width as i64);
+            max_y = max_y.max(by + bimg.height as i64);
+        }
+
+        // Confetti particles (screen coordinates).
+        for p in &self.confetti {
+            let px = p.x.floor() as i64;
+            let py = p.y.floor() as i64;
+            min_x = min_x.min(px);
+            min_y = min_y.min(py);
+            max_x = max_x.max(px + p.w as i64);
+            max_y = max_y.max(py + p.h as i64);
+        }
+
+        // Pong hit count, drawn above the ball.
+        let score_px = (3.0 * self.scale * self.dpi_scale).round().max(1.0) as i64;
+        let score = if self.pong.is_some() && self.pong_score > 0 {
+            let text = self.pong_score.to_string();
+            let sw = text.len() as i64 * 4 * score_px;
+            let sh = 5 * score_px;
+            let sx = pet_x + pet_w / 2 - sw / 2;
+            let sy = pet_y - sh - (4.0 * self.scale * self.dpi_scale).round() as i64;
+            min_x = min_x.min(sx);
+            min_y = min_y.min(sy);
+            // +1 accounts for the digit drop shadow.
+            max_x = max_x.max(sx + sw + 1);
+            max_y = max_y.max(sy + sh + 1);
+            Some((text, sx, sy))
+        } else {
+            None
+        };
+
+        if bubble.is_none() && self.confetti.is_empty() && score.is_none() {
+            return Some((pet_img, pet_x, pet_y));
+        }
+
+        let out_w = (max_x - min_x) as u32;
+        let out_h = (max_y - min_y) as u32;
+        let mut out = Image {
+            width: out_w,
+            height: out_h,
+            rgba: vec![0; (out_w * out_h * 4) as usize],
+        };
+        blit(
+            &mut out,
+            &pet_img,
+            pet_x - min_x,
+            pet_y - min_y,
+            0,
+            0,
+            pet_img.width,
+            pet_img.height,
+        );
+        if let Some((bimg, bx, by)) = &bubble {
+            blit(&mut out, bimg, bx - min_x, by - min_y, 0, 0, bimg.width, bimg.height);
+        }
+        for p in &self.confetti {
+            let t = (now.saturating_sub(p.born)) as f64 / p.life.max(1) as f64;
+            let alpha = if t < 0.2 {
+                t / 0.2
+            } else if t > 0.7 {
+                ((1.0 - t) / 0.3).max(0.0)
+            } else {
+                1.0
+            };
+            fill_rect(
+                &mut out,
+                p.x.floor() as i64 - min_x,
+                p.y.floor() as i64 - min_y,
+                p.w as i64,
+                p.h as i64,
+                p.color,
+                (alpha * 255.0).round() as u8,
+            );
+        }
+        if let Some((text, sx, sy)) = &score {
+            // Dark shadow offset, then white digits on top.
+            draw_digits(&mut out, sx - min_x + 1, sy - min_y + 1, text, [0x00, 0x00, 0x00], score_px as u32);
+            draw_digits(&mut out, sx - min_x, sy - min_y, text, [0xff, 0xff, 0xff], score_px as u32);
+        }
+        Some((out, min_x, min_y))
+    }
+
+    /// The animated speech bubble (`buddy-speech`) placed above the pet.
+    fn speech_bubble(&self, now: u64, pet_x: i64, pet_y: i64) -> Option<(Image, i64, i64)> {
+        let variant = if self.color == "insiders" { "insiders" } else { "stable" };
+        let sheet = asset(&format!("buddy-speech-{}-96.spritesheet.png", variant))
+            .or_else(|| asset(&format!("buddy-speech-{}-96.png", variant)))?;
+        let idx = frame_index_for(SPEECH_FRAME_DURATIONS, now.saturating_sub(self.anim_start));
+        let src_x = (idx as u32 * 96).min(sheet.width.saturating_sub(96));
+
+        let bubble_px = (72.0 * self.scale * self.dpi_scale).round() as u32;
+        let mut img = Image {
+            width: bubble_px,
+            height: bubble_px,
+            rgba: vec![0; (bubble_px * bubble_px * 4) as usize],
+        };
+        // Copy the 96x96 source cell into the bubble image (bilinear-free
+        // nearest up/downscale).
+        for y in 0..bubble_px {
+            let sy = (y as u32 * 96 / bubble_px) as u32;
+            for x in 0..bubble_px {
+                let sx = (x as u32 * 96 / bubble_px) as u32;
+                let si = (((sy * sheet.width + src_x + sx) * 4) as usize);
+                let di = ((y * bubble_px + x) * 4) as usize;
+                img.rgba[di..di + 4].copy_from_slice(&sheet.rgba[si..si + 4]);
+            }
+        }
+
+        // Place the bubble above the pet, aligned with its head.
+        let scale = self.scale * self.dpi_scale;
+        let bx = pet_x + (24.0 * scale).round() as i64;
+        let by = pet_y - img.height as i64 + (6.0 * scale).round() as i64;
+        Some((img, bx, by))
     }
 
     fn frame_index(&self, now: u64) -> usize {
@@ -1232,7 +1548,11 @@ impl Pet {
         let total: u64 = durs.iter().sum();
         let one_shot = matches!(
             self.anim_state,
-            State::Waking | State::ButtonPress | State::Cool | State::Splat
+            State::Waking
+                | State::ButtonPress
+                | State::Cool
+                | State::Splat
+                | State::Searching
         );
         if one_shot && elapsed >= total {
             return durs.len() - 1;
@@ -1405,6 +1725,8 @@ impl Pet {
             self.base_state = State::Idle;
             self.transient = Some((State::Waking, now + WAKE_STATE_DURATION));
         }
+        // Restart the periodic "thinking" schedule fresh on every wake.
+        self.next_think = 0;
     }
 
     pub fn click(&mut self, now: u64, cursor: (f64, f64)) {
@@ -1569,13 +1891,25 @@ impl Pet {
             if now >= end {
                 self.transient = None;
                 self.set_state(self.base_state, now);
-                if s == State::Waking {
-                    // nothing else needed
+                match s {
+                    State::Waking => {}
+                    // A finished "thinking" episode schedules the next one; the
+                    // idle clock keeps running so the pet can still fall asleep.
+                    State::Rendering => {
+                        self.schedule_think(now);
+                    }
+                    _ => {}
                 }
             }
         }
         // Idle -> sleep
-        if self.transient.is_none() && !self.dragging && self.throw.is_none() && self.pong.is_none() && !self.on_the_run {
+        if self.transient.is_none()
+            && !self.dragging
+            && self.throw.is_none()
+            && self.pong.is_none()
+            && !self.on_the_run
+            && self.search_until == 0
+        {
             if now.saturating_sub(self.idle_since) >= IDLE_SLEEP_DELAY {
                 if self.base_state != State::Sleep {
                     self.base_state = State::Sleep;
@@ -1583,9 +1917,28 @@ impl Pet {
                 }
             }
         }
+        // Periodic "thinking" (rendering) episodes with the speech bubble.
+        self.step_think(now);
+
+        // Go on the Run: apply the pending hide/show once the search animation
+        // finishes.
+        if self.search_until != 0 && now >= self.search_until {
+            self.search_until = 0;
+            self.on_the_run = self.search_target_run;
+            if self.on_the_run {
+                self.set_state(State::Searching, now);
+            } else {
+                self.wake(now);
+                self.set_state(self.base_state, now);
+            }
+        }
+
         // Wizard invisibility: periodic episodes while wearing the wizard hat
         // (mirrors `scheduleWizardInvisibility` / `setWizardInvisible`).
         self.step_wizard(now);
+
+        // Confetti particles.
+        self.step_confetti(now);
 
         // Throw physics
         if let Some(t) = self.throw.take() {
@@ -1594,13 +1947,84 @@ impl Pet {
 
         // Pong
         if let Some(mut p) = self.pong.take() {
-            self.step_pong(&mut p, now, cursor);
-            self.pong = Some(p);
+            if self.step_pong(&mut p, now, cursor) {
+                self.pong = Some(p);
+            }
         }
 
         // Keep rendered state in sync when idle
-        if self.transient.is_none() && self.throw.is_none() && !self.dragging && self.pong.is_none() {
+        if self.transient.is_none()
+            && self.throw.is_none()
+            && !self.dragging
+            && self.pong.is_none()
+            && self.search_until == 0
+        {
             self.set_state(self.base_state, now);
+        }
+    }
+
+    fn schedule_think(&mut self, now: u64) {
+        self.next_think = now
+            + THINK_MIN_INTERVAL
+            + (self.rng() * (THINK_MAX_INTERVAL - THINK_MIN_INTERVAL) as f64) as u64;
+    }
+
+    fn step_think(&mut self, now: u64) {
+        if self.on_the_run
+            || self.dragging
+            || self.throw.is_some()
+            || self.pong.is_some()
+            || self.search_until != 0
+        {
+            return;
+        }
+        if self.base_state != State::Idle || self.transient.is_some() {
+            return;
+        }
+        if self.next_think == 0 {
+            self.schedule_think(now);
+            return;
+        }
+        if now >= self.next_think {
+            self.next_think = 0;
+            self.transient = Some((State::Rendering, now + RENDER_DURATION));
+            self.set_state(State::Rendering, now);
+        }
+    }
+
+    fn step_confetti(&mut self, now: u64) {
+        if self.confetti.is_empty() {
+            return;
+        }
+        let last = if self.confetti_last == 0 { now.saturating_sub(16) } else { self.confetti_last };
+        let dt = (now.saturating_sub(last).min(32)) as f64 / 1000.0;
+        self.confetti_last = now;
+        for p in self.confetti.iter_mut() {
+            p.vy += CONFETTI_GRAVITY * dt;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+        }
+        self.confetti.retain(|p| now.saturating_sub(p.born) < p.life);
+    }
+
+    fn spawn_confetti(&mut self, now: u64) {
+        let cx = self.left + self.display() / 2.0;
+        let cy = self.top + self.display() / 2.0;
+        self.confetti.clear();
+        for i in 0..CONFETTI_COUNT {
+            let angle = (-160.0 + self.rng() * 140.0).to_radians();
+            let speed = 200.0 + self.rng() * 220.0;
+            self.confetti.push(ConfettiParticle {
+                x: cx,
+                y: cy,
+                vx: angle.cos() * speed,
+                vy: angle.sin() * speed,
+                w: (4.0 + (i % 3) as f64 * 1.5).round() as u32,
+                h: (3 + ((i + 1) % 3)) as u32,
+                color: CONFETTI_COLORS[i % CONFETTI_COLORS.len()],
+                born: now,
+                life: CONFETTI_LIFE_MS,
+            });
         }
     }
 
@@ -1778,85 +2202,120 @@ impl Pet {
             || (!self.april_fools && t.top > floor_land && t.vy >= 0.0);
 
         if landed {
-            self.finish_throw(now);
             if self.bounce_count >= CONFETTI_SCORE {
-                self.bounce_count = 0;
+                self.spawn_confetti(now);
             }
+            self.finish_throw(now);
+            self.bounce_count = 0;
         } else {
             self.throw = Some(t);
         }
     }
 
     fn start_pong(&mut self, now: u64, vx: f64, vy: f64) {
-        let speed = (vx * vx + vy * vy).sqrt().max(PONG_BALL_SPEED);
-        let mut p = Pong {
-            ball_x: self.left + self.display() / 2.0,
-            ball_y: self.top + self.display() / 2.0,
-            vx: if vx.abs() > 40.0 { vx } else { -PONG_BALL_SPEED },
-            vy: vy,
-            paddle_y: 0.0,
-            pre_game_until: now + 400,
+        // The ball carries the throw's initial velocity; if it's negligible,
+        // launch left with a slight random angle (matches the plugin).
+        let speed = (vx * vx + vy * vy).sqrt();
+        let (bvx, bvy) = if speed > 40.0 {
+            (vx, vy)
+        } else {
+            let angle = (self.rng() * 0.6 - 0.3) * std::f64::consts::PI;
+            (-angle.cos() * PONG_BALL_SPEED, angle.sin() * PONG_BALL_SPEED)
         };
-        let _ = speed;
-        p.ball_x = self.left;
-        p.ball_y = self.top;
-        self.pong = Some(p);
+        self.pong = Some(Pong {
+            ball_x: self.left,
+            ball_y: self.top,
+            vx: bvx,
+            vy: bvy,
+            paddle_y: 0.0,
+            start: now,
+            last_frame: now,
+            rotation: 0.0,
+        });
+        self.pong_score = 0;
+        // The ball flies right-side-up (only the right-wall rest uses the
+        // rotated gravity pose).
+        self.gravity_pose = false;
         self.set_state(State::Falling, now);
     }
 
-    fn step_pong(&mut self, p: &mut Pong, now: u64, cursor: Option<(f64, f64)>) {
-        let elapsed = 16.0 / 1000.0;
-        if now < p.pre_game_until {
-            // Hold the ball, follow the mouse vertically.
-            if let Some((_, cy)) = cursor {
-                p.paddle_y = (cy - PONG_PADDLE_HEIGHT / 2.0).clamp(0.0, self.floor - PONG_PADDLE_HEIGHT);
+    /// Advances one pong step; returns `false` when the game has ended.
+    fn step_pong(&mut self, p: &mut Pong, now: u64, cursor: Option<(f64, f64)>) -> bool {
+        let elapsed_ms = now.saturating_sub(p.last_frame).min(THROW_MAX_FRAME_DURATION) as f64;
+        p.last_frame = now;
+        let dt = elapsed_ms / 1000.0;
+        let display = self.display();
+
+        // Wizard hat: while playing, every in-game moment may teleport the ball
+        // to the left half, keeping its velocity.
+        if self.accessory.as_deref() == Some("wizardHat")
+            && now.saturating_sub(p.start) >= WIZARD_TELEPORT_GRACE
+        {
+            let chance = 1.0 - (-WIZARD_TELEPORT_CHANCE_PER_SECOND * dt).exp();
+            if self.rng() < chance {
+                p.ball_y = self.rng() * (self.floor - display).max(0.0);
+                p.ball_x = self.rng() * (self.screen_w / 2.0 - display).max(0.0);
             }
-            self.left = p.ball_x;
-            self.top = p.ball_y;
-            return;
         }
-        p.ball_x += p.vx * elapsed;
-        p.ball_y += p.vy * elapsed;
-        // Top/bottom walls
+
+        p.ball_x += p.vx * dt;
+        p.ball_y += p.vy * dt;
+
+        // Top and bottom walls.
         if p.ball_y < 0.0 {
             p.ball_y = 0.0;
-            p.vy = -p.vy;
+            p.vy = p.vy.abs();
+        } else if p.ball_y + display > self.floor {
+            p.ball_y = self.floor - display;
+            p.vy = -p.vy.abs();
         }
-        if p.ball_y > self.floor - self.display() {
-            p.ball_y = self.floor - self.display();
-            p.vy = -p.vy;
-        }
-        // Right wall = paddle
-        let paddle_left = self.screen_w - PONG_PADDLE_WIDTH;
-        if p.ball_x + self.display() >= paddle_left
-            && p.ball_y + self.display() >= p.paddle_y
-            && p.ball_y <= p.paddle_y + PONG_PADDLE_HEIGHT
-            && p.vx > 0.0
-        {
-            p.ball_x = paddle_left - self.display();
-            let rel = ((p.ball_y + self.display() / 2.0) - (p.paddle_y + PONG_PADDLE_HEIGHT / 2.0)) / (PONG_PADDLE_HEIGHT / 2.0);
-            let angle = rel.clamp(-1.0, 1.0) * 60.0f64.to_radians();
-            let sp = (p.vx * p.vx + p.vy * p.vy).sqrt().max(PONG_BALL_SPEED) * 1.02;
-            p.vx = -sp * angle.cos();
-            p.vy = sp * angle.sin();
-        }
-        // Left wall = miss
+        // Left wall bounces.
         if p.ball_x < 0.0 {
+            p.ball_x = 0.0;
+            p.vx = p.vx.abs();
+        }
+
+        // Paddle on the right wall: bounce when the ball's right edge reaches it
+        // and its center is within the paddle's span.
+        let paddle_left = self.screen_w - PONG_PADDLE_WIDTH;
+        let paddle_top = p.paddle_y;
+        let paddle_bottom = p.paddle_y + PONG_PADDLE_HEIGHT;
+        if p.vx > 0.0 && p.ball_x + display >= paddle_left {
+            let ball_center_y = p.ball_y + display / 2.0;
+            if ball_center_y >= paddle_top && ball_center_y <= paddle_bottom {
+                let rel = ((ball_center_y - (paddle_top + paddle_bottom) / 2.0)
+                    / (PONG_PADDLE_HEIGHT / 2.0))
+                    .clamp(-1.0, 1.0);
+                let angle = rel * PONG_MAX_ANGLE.to_radians();
+                let sp = (p.vx * p.vx + p.vy * p.vy).sqrt().max(PONG_BALL_SPEED) * 1.02;
+                p.vx = -angle.cos() * sp;
+                p.vy = angle.sin() * sp;
+                p.ball_x = paddle_left - display;
+                self.pong_score += 1;
+            }
+        }
+
+        // Paddle follows the mouse.
+        if let Some((_, cy)) = cursor {
+            p.paddle_y =
+                (cy - PONG_PADDLE_HEIGHT / 2.0).clamp(0.0, self.floor - PONG_PADDLE_HEIGHT);
+        }
+
+        // Game over: the ball slipped past the right wall (missed the paddle).
+        if p.ball_x > self.screen_w {
             self.pong = None;
             self.pong_score = 0;
             self.finish_throw(now);
-            return;
+            return false;
         }
-        // Score: hitting the paddle increments.
-        if p.vx < 0.0 && self.pong_score == 0 {
-            self.pong_score += 1;
-        }
-        if let Some((_, cy)) = cursor {
-            p.paddle_y = (cy - PONG_PADDLE_HEIGHT / 2.0).clamp(0.0, self.floor - PONG_PADDLE_HEIGHT);
-        }
+
+        // Continuous ball spin.
+        p.rotation = (p.rotation + elapsed_ms * PONG_SPIN_RATE) % 360.0;
+
         self.left = p.ball_x;
         self.top = p.ball_y;
         self.set_state(State::Falling, now);
+        true
     }
 
     pub fn set_scale(&mut self, s: f64) {
@@ -1876,16 +2335,21 @@ impl Pet {
     }
 
     pub fn toggle_run(&mut self, now: u64) {
-        self.on_the_run = !self.on_the_run;
-        if !self.on_the_run {
-            self.wake(now);
-            self.place_rest();
-            self.set_state(State::Idle, now);
+        if self.on_the_run {
+            // Return: play the search animation, then go idle.
+            self.on_the_run = false;
+            self.search_target_run = false;
+        } else {
+            // Run away: play the search animation, then hide.
+            self.search_target_run = true;
         }
+        self.search_until = now + SEARCH_DURATION;
+        self.set_state(State::Searching, now);
     }
 
     pub fn hide(&mut self) {
         self.on_the_run = true;
+        self.search_until = 0;
     }
 
     pub fn show(&mut self, now: u64) {
@@ -1895,7 +2359,9 @@ impl Pet {
         self.left = self.rng() * self.max_left();
         self.top = self.max_top();
         self.place_rest();
-        self.set_state(State::Idle, now);
+        self.search_target_run = false;
+        self.search_until = now + SEARCH_DURATION;
+        self.set_state(State::Searching, now);
     }
 
     /// Serialize the current pet configuration for persistence.

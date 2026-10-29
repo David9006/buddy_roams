@@ -14,12 +14,14 @@ Buddy Roams 桌面版 —— 把 VS Code 的 Buddy 宠物放到你的 Windows �
 
 - 逐像素点击穿透：只有宠物实际绘制的像素拦截鼠标，其余全部穿透到桌面和其它窗口。
 - 全部状态与动画：待机、睡眠/唤醒、点击互动（buttonPress / love / cool / sing / speechless /
-  worry / yapping / 变身）、拖拽 / 抛掷（重力、撞墙、落地、鼠标弹跳连击）、晕眩。
+  worry / yapping / 变身）、拖拽 / 抛掷（重力、撞墙、落地、鼠标弹跳连击、20 连击彩带）、晕眩。
+- 周期性「思考」（rendering）状态 + 语音气泡；Go on the Run 带搜寻 / 回场动画。
 - 17 顶帽子 + 特殊能力（spinner 竹蜻蜓、propeller 升力、party 点击概率、wizard 隐身 + 瞬移）。
 - 换色（Stable / Insiders / 8 种自定义）、缩放 grow/shrink、Go on the Run。
 - 节日：万圣节隐身（只露帽子 + 橙色眼球）、愚人节右向重力 + 左右 pong。
 - 原生右键菜单 + 系统托盘（显示 / 隐藏 / 退出），位置/大小/颜色/饰品持久化到
   `%APPDATA%\BuddyRoams\config.json`。
+- 全局快捷键：`Ctrl+Alt+=` 放大、`Ctrl+Alt+-` 缩小（与 VS Code 插件一致）。
 
 ## 素材来源与授权
 
@@ -63,9 +65,7 @@ cargo run --release
 ## 已知限制 / 后续
 
 - 只覆盖主显示器；多显示器漫游待实现。
-- DPI 缩放尚未按系统 DPI 适配（宠物固定 48px 逻辑尺寸）。
-- 抛掷连续旋转已实现；20 连击彩带、语音气泡、Go on the Run 的搜寻/回场动画为后续项；
-  愚人节 pong 为初版实现。
+- DPI 缩放已按系统 DPI 适配；多显示器逐屏 DPI 待实现。
 - macOS / Linux 移植在计划中。
 
 ---
@@ -87,7 +87,9 @@ desktop pets (Shimeji-style).
   else passes through to the desktop and other windows.
 - All states and animations: idle, sleep/wake, click interactions (buttonPress / love / cool / sing
   / speechless / worry / yapping / transformation), drag & throw (gravity, wall bounce, landing,
-  mouse-bounce combos), dizziness.
+  mouse-bounce combos, 20-bounce confetti burst), dizziness.
+- Periodic "thinking" (rendering) state with the speech bubble; Go on the Run with search / return
+  animations.
 - 17 hats + special abilities (spinner propeller, propeller lift, party click chance, wizard
   invisibility + teleport).
 - Colors (Stable / Insiders / 8 custom), grow/shrink scale, Go on the Run.
@@ -95,6 +97,7 @@ desktop pets (Shimeji-style).
   pong.
 - Native right-click menu + system tray (show / hide / quit); position/size/color/accessory persist
   to `%APPDATA%\BuddyRoams\config.json`.
+- Global hotkeys: `Ctrl+Alt+=` to grow, `Ctrl+Alt+-` to shrink (matches the VS Code extension).
 
 ## Assets & licensing
 
@@ -139,8 +142,5 @@ from an installed VS Code (`node scripts/extract-assets.mjs`).
 ## Known limitations / next steps
 
 - Primary monitor only; multi-monitor roaming is planned.
-- DPI scaling not yet adapted (the pet keeps a fixed 48px logical size).
-- Continuous rotation during throws is implemented; the 20-bounce confetti burst, the speech
-  bubble, and Go on the Run's search/return animation are follow-ups; the April Fools' pong is a
-  first cut.
+- DPI scaling now adapts to the system DPI; per-monitor DPI is a follow-up.
 - macOS / Linux ports are planned.

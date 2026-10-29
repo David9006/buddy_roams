@@ -18,11 +18,15 @@ use engine::{Config, Pet};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BLENDFUNCTION, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetDeviceCaps, ReleaseDC,
+    SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BLENDFUNCTION, BITMAPINFO, BITMAPINFOHEADER,
+    DIB_RGB_COLORS, LOGPIXELSX,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    ReleaseCapture, RegisterHotKey, SetCapture, UnregisterHotKey, MOD_ALT, MOD_CONTROL,
+    MOD_NOREPEAT, VK_OEM_MINUS, VK_OEM_PLUS,
+};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
@@ -30,6 +34,11 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 const TIMER_ID: usize = 1;
 const TRAY_MSG: u32 = WM_APP + 1;
+
+// Global hotkey ids (WM_HOTKEY wparam), mirroring the extension's keybindings:
+// Ctrl+Alt+= grows, Ctrl+Alt+- shrinks.
+const HOTKEY_GROW: i32 = 1;
+const HOTKEY_SHRINK: i32 = 2;
 
 // Menu item ids.
 const ID_SHOW: usize = 1;
@@ -439,6 +448,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             handle_command(hwnd, id);
             LRESULT(0)
         }
+        WM_HOTKEY => {
+            match wparam.0 as i32 {
+                HOTKEY_GROW => handle_command(hwnd, ID_GROW),
+                HOTKEY_SHRINK => handle_command(hwnd, ID_SHRINK),
+                _ => {}
+            }
+            LRESULT(0)
+        }
         TRAY_MSG => {
             let mouse = lparam.0 as u32;
             if mouse == WM_RBUTTONUP as u32 || mouse == WM_CONTEXTMENU as u32 {
@@ -592,6 +609,16 @@ fn main() {
     let class_name = w!("BuddyRoamsWindow");
 
     unsafe {
+        // DPI-aware rendering: the pet's 48px logical size is scaled by the
+        // system DPI so it stays the same physical size on high-DPI monitors.
+        let _ = SetProcessDPIAware();
+        let dpi_scale = {
+            let hdc = GetDC(None);
+            let dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+            ReleaseDC(None, hdc);
+            (dpi.max(96) as f64) / 96.0
+        };
+
         let wc = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
@@ -622,7 +649,14 @@ fn main() {
         .unwrap();
 
         let config = load_config();
-        let pet = Pet::new(screen_h, screen_w, config, is_april_fools(), is_halloween());
+        let pet = Pet::new(
+            screen_h,
+            screen_w,
+            config,
+            is_april_fools(),
+            is_halloween(),
+            dpi_scale,
+        );
 
         APP.with(|cell| {
             *cell.borrow_mut() = Some(App {
@@ -641,6 +675,19 @@ fn main() {
         let icon = add_tray(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOWNA);
         let _ = SetTimer(hwnd, TIMER_ID, 16, None);
+        // Global hotkeys, mirroring the VS Code extension's keybindings.
+        let _ = RegisterHotKey(
+            hwnd,
+            HOTKEY_GROW,
+            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+            VK_OEM_PLUS.0 as u32,
+        );
+        let _ = RegisterHotKey(
+            hwnd,
+            HOTKEY_SHRINK,
+            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+            VK_OEM_MINUS.0 as u32,
+        );
 
         let mut msg = MSG::default();
         loop {
@@ -653,6 +700,8 @@ fn main() {
         }
 
         let _ = KillTimer(hwnd, TIMER_ID);
+        let _ = UnregisterHotKey(hwnd, HOTKEY_GROW);
+        let _ = UnregisterHotKey(hwnd, HOTKEY_SHRINK);
         remove_tray(icon);
     }
 }
