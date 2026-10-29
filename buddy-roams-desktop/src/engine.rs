@@ -174,11 +174,6 @@ fn tracks_cursor(state: State) -> bool {
     )
 }
 
-fn blinks(state: State, frame: usize) -> bool {
-    (state == State::ButtonPress || state == State::Love)
-        && (state != State::ButtonPress || frame + 1 != frame_durations(State::ButtonPress).len())
-}
-
 // ---------------------------------------------------------------------------
 // Color / tinting
 // ---------------------------------------------------------------------------
@@ -756,53 +751,81 @@ fn composite_frame(
     }
 }
 
-fn draw_pupils(
+// Eye geometry, ported from the VS Code chatPet CSS (48px display space).
+// The eye is a small pupil drawn in `currentColor`; the body sprite's baked-in
+// dark eyes are covered exactly by this pupil, and gaze translates it by 2px
+// per gaze unit — the same way the plugin's `.chat-pet-pupil` works.
+const EYE_TOP: f64 = 30.0;
+const EYE_TOP_LOVE: f64 = 31.0;
+const EYE_LEFT_LEFT: f64 = 18.0; // facing right
+const EYE_LEFT_RIGHT: f64 = 30.0; // facing right
+const EYE_LEFT_LEFT_FACING_LEFT: f64 = 22.0;
+const EYE_LEFT_RIGHT_FACING_LEFT: f64 = 10.0;
+const PUPIL_OFFSET: f64 = 2.0;
+const PUPIL_WIDTH: f64 = 4.0;
+const PUPIL_HEIGHT: f64 = 4.0;
+const PUPIL_HEIGHT_TALL: f64 = 8.0;
+const PUPIL_HEIGHT_LOVE: f64 = 7.0;
+const GAZE_PIXELS_PER_UNIT: f64 = 2.0;
+const BLINK_DURATION: u64 = 260; // matches chat-pet-eye-blink 260ms
+
+/// `doesChatPetStateBlink` from the plugin: some states keep the eyes visible
+/// without gaze tracking.
+fn blinks(state: State, frame: usize) -> bool {
+    (state == State::ButtonPress || state == State::Love)
+        && (state != State::ButtonPress || frame + 1 != frame_durations(State::ButtonPress).len())
+}
+
+/// Renders the eyes layer, faithfully mirroring the plugin's `.chat-pet-eyes`
+/// overlay: only visible when the state tracks the cursor or is a blink state,
+/// the pupil color is `getChatPetEyeColor`, and gaze shifts it by 2px per unit.
+/// While a random blink is active the pupil is squashed to a 2px strip.
+fn draw_eyes(
     dst: &mut Image,
     display: f64,
-    _color: &str,
     eye_color: [u8; 3],
     gaze: (f64, f64),
     facing_left: bool,
-    blink: bool,
+    blinking: bool,
     state: State,
 ) {
     let s = display / 48.0;
-    // Geometry in 48px display space (matches the VS Code CSS exactly). The
-    // pupil is anchored at its top-left, NOT centered, so it lines up with the
-    // dark eye drawn in the body sprite.
     let (left_x, right_x) = if facing_left {
-        (22.0, 10.0)
+        (EYE_LEFT_LEFT_FACING_LEFT, EYE_LEFT_RIGHT_FACING_LEFT)
     } else {
-        (18.0, 30.0)
+        (EYE_LEFT_LEFT, EYE_LEFT_RIGHT)
     };
-    let eye_top = if state == State::Love { 31.0 } else { 30.0 };
-    // Base pupil is 4x4; "tall" states use an 8px-tall pupil, love uses 7px.
+    let top = if state == State::Love { EYE_TOP_LOVE } else { EYE_TOP };
     let pupil_h = if matches!(
         state,
         State::Idle | State::Rendering | State::ButtonPress | State::Yapping
     ) {
-        8.0
+        PUPIL_HEIGHT_TALL
     } else if state == State::Love {
-        7.0
+        PUPIL_HEIGHT_LOVE
     } else {
-        4.0
+        PUPIL_HEIGHT
     };
-    let pupil_w = 4.0;
 
     for ex in [left_x, right_x] {
-        let px = (ex + 2.0 + gaze.0 * 2.0) * s;
-        let py = (eye_top + 2.0 + gaze.1 * 2.0) * s;
+        let px = (ex + PUPIL_OFFSET + gaze.0 * GAZE_PIXELS_PER_UNIT) * s;
+        let py = (top + PUPIL_OFFSET + gaze.1 * GAZE_PIXELS_PER_UNIT) * s;
         let x0 = px.round() as i64;
         let y0 = py.round() as i64;
-        let w = (pupil_w * s).round().max(1.0) as i64;
+        let w = (PUPIL_WIDTH * s).round().max(1.0) as i64;
         let h = (pupil_h * s).round().max(1.0) as i64;
-        for y in y0..y0 + h {
+
+        // The CSS blink animation clips the pupil to a thin horizontal strip
+        // (inset(1px 0) / inset(3px 0)); approximate with the middle 2px.
+        let (y_start, y_end) = if blinking && h >= 2 {
+            (y0 + (h - 2) / 2, y0 + (h - 2) / 2 + 2)
+        } else {
+            (y0, y0 + h)
+        };
+
+        for y in y_start..y_end {
             for x in x0..x0 + w {
                 if x < 0 || y < 0 || x >= dst.width as i64 || y >= dst.height as i64 {
-                    continue;
-                }
-                // Blink squashes the pupil to a thin horizontal line.
-                if blink && y != y0 && y != y0 + h - 1 {
                     continue;
                 }
                 let i = ((y * dst.width as i64 + x) * 4) as usize;
@@ -850,7 +873,9 @@ pub struct Pet {
     dragging: bool,
     facing: Facing,
     gaze: (f64, f64),
-    blink: bool,
+    // Random blink controller (mirrors the plugin's BlinkController).
+    blinking: bool,
+    blink_end: u64,
     next_blink: u64,
     idle_since: u64,
 
@@ -927,7 +952,8 @@ impl Pet {
             dragging: false,
             facing: Facing::Right,
             gaze: (0.0, 0.0),
-            blink: false,
+            blinking: false,
+            blink_end: 0,
             next_blink: 0,
             idle_since: 0,
             anim_state: State::Idle,
@@ -1000,29 +1026,44 @@ impl Pet {
         if self.on_the_run {
             return None;
         }
-        // Gaze
-        if let Some((cx, cy)) = cursor {
-            let center = (self.left + self.display() / 2.0, self.top + self.display() / 2.0);
-            let (dx, dy) = (cx - center.0, cy - center.1);
-            let dist = (dx * dx + dy * dy).sqrt();
-            self.gaze = if dist < 1.0 {
-                (0.0, 0.0)
-            } else {
-                ((dx / dist).round(), (dy / dist).round())
-            };
-        }
-        // Blink scheduling
-        if now >= self.next_blink {
-            if blinks(self.anim_state, self.frame_index(now)) {
-                self.blink = true;
-            }
-            self.next_blink = now + BLINK_MIN_DELAY + (self.rng() * (BLINK_MAX_DELAY - BLINK_MIN_DELAY) as f64) as u64;
-        } else if self.blink && self.frame_index(now) > 0 {
-            self.blink = false;
-        }
 
         let state = self.anim_state;
         let frame = self.frame_index(now);
+        let tracking = tracks_cursor(state);
+        let state_blink = blinks(state, frame);
+
+        // Gaze: only while the state tracks the cursor (mirrors `updateGaze`).
+        if tracking {
+            if let Some((cx, cy)) = cursor {
+                let center = (self.left + self.display() / 2.0, self.top + self.display() / 2.0);
+                let (dx, dy) = (cx - center.0, cy - center.1);
+                let dist = (dx * dx + dy * dy).sqrt();
+                self.gaze = if dist < 1.0 {
+                    (0.0, 0.0)
+                } else {
+                    ((dx / dist).round(), (dy / dist).round())
+                };
+            }
+        } else {
+            self.gaze = (0.0, 0.0);
+        }
+
+        // Random blink controller (mirrors the plugin's `BlinkController`).
+        if tracking || state_blink {
+            if now >= self.next_blink {
+                self.blinking = true;
+                self.blink_end = now + BLINK_DURATION;
+                self.next_blink = now
+                    + BLINK_MIN_DELAY
+                    + (self.rng() * (BLINK_MAX_DELAY - BLINK_MIN_DELAY) as f64) as u64;
+            }
+            if self.blinking && now >= self.blink_end {
+                self.blinking = false;
+            }
+        } else {
+            self.blinking = false;
+        }
+
         let (fw, fh) = frame_size(state);
         let variant = if self.color == "insiders" { "insiders" } else { "stable" };
         let sheet = asset(&format!("{}-{}.spritesheet.png", sprite_name(state, variant), {
@@ -1054,15 +1095,19 @@ impl Pet {
         let mut frame_buf = Image { width: fw, height: fh, rgba: vec![0; (fw * fh * 4) as usize] };
         composite_frame(&mut frame_buf, &sheet, acc, frame, state, self.facing == Facing::Left, &self.color, skip_body);
 
-        // Pupils (skip when body is hidden entirely by Halloween/wizard, except
-        // the eyes stay for Halloween ghost).
+        // Eyes layer: mirrors the plugin's `.chat-pet-eyes` overlay. Visible only
+        // while the state tracks the cursor or is a blink state; gaze shifts the
+        // pupil, a random blink squashes it.
         let eye = if self.halloween {
             WIZARD_EYE_COLOR
         } else {
             eye_color(&self.color)
         };
         let mut display_img = scale_nearest(&frame_buf, (fw as f64 * 0.5 * self.scale * self.dpi_scale).round() as u32, (fh as f64 * 0.5 * self.scale * self.dpi_scale).round() as u32);
-        draw_pupils(&mut display_img, self.display(), &self.color, eye, self.gaze, self.facing == Facing::Left, self.blink, state);
+        if tracking || state_blink {
+            let gaze = if tracking { self.gaze } else { (0.0, 0.0) };
+            draw_eyes(&mut display_img, self.display(), eye, gaze, self.facing == Facing::Left, self.blinking, state);
+        }
 
         // April Fools' gravity pose: rotate the whole pet -90°.
         if self.gravity_pose {
