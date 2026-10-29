@@ -32,6 +32,8 @@ const DRAG_THRESHOLD: f64 = 2.0;
 const THROW_MIN_VELOCITY: f64 = 650.0;
 const THROW_MAX_VELOCITY: f64 = 2_400.0;
 const THROW_GRAVITY: f64 = 1_800.0;
+// On a slow drag release the pet pops gently upward instead of dropping.
+const SLOW_RELEASE_TOSS_VELOCITY: f64 = 400.0;
 const THROW_WALL_RESTITUTION: f64 = 0.2;
 const THROW_CEILING_RESTITUTION: f64 = 0.2;
 const THROW_MAX_DURATION: u64 = 4_000;
@@ -560,15 +562,16 @@ fn scale_nearest(img: &Image, w: u32, h: u32) -> Image {
     }
 }
 
-/// Rotates an image by `angle` degrees (counter-clockwise) using nearest-neighbor
-/// sampling into a tight bounding box.
+/// Rotates an image by `angle` degrees (counter-clockwise for a positive
+/// angle) using nearest-neighbor sampling into a tight bounding box.
 fn rotate(img: &Image, angle: f64) -> Image {
     let rad = angle.to_radians();
-    let (sin, cos) = (rad.sin().abs(), rad.cos().abs());
+    let (sin, cos) = rad.sin_cos();
+    let (asin, acos) = (sin.abs(), cos.abs());
     let w = img.width as f64;
     let h = img.height as f64;
-    let nw = (h * sin + w * cos).ceil() as u32;
-    let nh = (h * cos + w * sin).ceil() as u32;
+    let nw = (h * asin + w * acos).ceil() as u32;
+    let nh = (h * acos + w * asin).ceil() as u32;
     let mut out = vec![0u8; (nw * nh * 4) as usize];
     let cx = w / 2.0;
     let cy = h / 2.0;
@@ -602,7 +605,7 @@ fn rotate_ccw90(img: &Image) -> Image {
     for y in 0..h {
         for x in 0..w {
             let s = (y * w + x) * 4;
-            let d = (x * h + (h - 1 - y)) * 4;
+            let d = ((w - 1 - x) * h + y) * 4;
             out[d..d + 4].copy_from_slice(&img.rgba[s..s + 4]);
         }
     }
@@ -1490,9 +1493,17 @@ impl Pet {
             let v = if s < 1.0 { s } else { 1.0 };
             self.begin_throw(vx * v, vy * v, now, false);
         } else {
-            // Slow release: a gentle fall from the release position (mirrors the
-            // plugin's `beginFall`), not an instant snap to the floor.
-            self.begin_throw(0.0, 0.0, now, false);
+            if self.april_fools {
+                // April Fools' replaces throws with pong; a slow release just
+                // re-settles against the right wall.
+                self.finish_throw(now);
+            } else {
+                // Slow release: a gentle upward toss instead of a straight drop.
+                // Keep a little horizontal drift, and always give an upward pop.
+                let vx = vx.clamp(-SLOW_RELEASE_TOSS_VELOCITY, SLOW_RELEASE_TOSS_VELOCITY);
+                let vy = vy.min(-SLOW_RELEASE_TOSS_VELOCITY);
+                self.begin_throw(vx, vy, now, false);
+            }
         }
     }
 
