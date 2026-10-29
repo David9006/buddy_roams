@@ -59,6 +59,31 @@ cd buddy_unleashed\buddy-roams-desktop
 cargo run --release
 ```
 
+## 架构
+
+默认 `cargo run --release` 编译的是**宿主架构**（在 ARM64 Windows 上就是 ARM64 原生构建）。支持三种
+Windows 目标，代码无需改动：
+
+| 架构 | Rust target | 说明 |
+|---|---|---|
+| ARM64 | `aarch64-pc-windows-msvc` | ARM64 Windows（含虚拟机）原生 |
+| amd64 | `x86_64-pc-windows-msvc` | Intel/AMD 64 位 Windows |
+| x86（32 位） | `i686-pc-windows-msvc` | 老式 32 位 Windows |
+
+交叉编译示例（在任意一台 Windows 上均可）：
+
+```powershell
+rustup target add x86_64-pc-windows-msvc   # amd64
+rustup target add i686-pc-windows-msvc     # x86
+rustup target add aarch64-pc-windows-msvc  # ARM64
+
+cargo build --release --target x86_64-pc-windows-msvc
+cargo build --release --target i686-pc-windows-msvc
+cargo build --release --target aarch64-pc-windows-msvc
+```
+
+产物位于 `target\<target>\release\buddy-roams.exe`。
+
 素材已内嵌进二进制，无需再抽取；只有需要从已安装的 VS Code 重新抽取时才运行
 `node scripts/extract-assets.mjs`。
 
@@ -135,6 +160,31 @@ git clone https://github.com/David9006/buddy_unleashed.git
 cd buddy_unleashed\buddy-roams-desktop
 cargo run --release
 ```
+
+## Architectures
+
+`cargo run --release` builds for the **host architecture** by default (native ARM64 when run on an
+ARM64 Windows machine). Three Windows targets are supported with no code changes:
+
+| Architecture | Rust target | Notes |
+|---|---|---|
+| ARM64 | `aarch64-pc-windows-msvc` | native on ARM64 Windows (including VMs) |
+| amd64 | `x86_64-pc-windows-msvc` | Intel/AMD 64-bit Windows |
+| x86 (32-bit) | `i686-pc-windows-msvc` | legacy 32-bit Windows |
+
+Cross-compilation examples (from any Windows machine):
+
+```powershell
+rustup target add x86_64-pc-windows-msvc   # amd64
+rustup target add i686-pc-windows-msvc     # x86
+rustup target add aarch64-pc-windows-msvc  # ARM64
+
+cargo build --release --target x86_64-pc-windows-msvc
+cargo build --release --target i686-pc-windows-msvc
+cargo build --release --target aarch64-pc-windows-msvc
+```
+
+The binary lands at `target\<target>\release\buddy-roams.exe`.
 
 The assets are embedded in the binary; re-extraction is only needed if you want to pull them again
 from an installed VS Code (`node scripts/extract-assets.mjs`).
