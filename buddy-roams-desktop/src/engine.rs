@@ -135,7 +135,9 @@ fn sprite_name(state: State, variant: &str) -> String {
         State::Sleep => "buddy-sleep",
         State::Waking => "buddy-waking",
         State::Rendering => "buddy-rendering",
-        State::Yapping => "buddy-yapping",
+        // `yapping` renders with the idle body (mouth-closed); the dedicated
+        // yapping sprite is only for the mouth-open frame, unused here.
+        State::Yapping => "buddy-idle",
         State::Sing => "buddy-sing",
         State::Speechless => "buddy-speechless",
         State::Worry => "buddy-worry",
@@ -170,7 +172,6 @@ fn tracks_cursor(state: State) -> bool {
             | State::Falling
             | State::WallImpact
             | State::Splat
-            | State::Yapping
     )
 }
 
@@ -1048,6 +1049,20 @@ impl Pet {
             self.gaze = (0.0, 0.0);
         }
 
+        // Facing: snap the whole body toward the cursor while idle and not
+        // being dragged (mirrors `FacingController.update`). Other states keep
+        // their current facing. `snapToCursor` only flips on a strict side.
+        if state == State::Idle && !self.dragging {
+            if let Some((cx, _)) = cursor {
+                let center = self.left + self.display() / 2.0;
+                if cx < center {
+                    self.facing = Facing::Left;
+                } else if cx > center {
+                    self.facing = Facing::Right;
+                }
+            }
+        }
+
         // Random blink controller (mirrors the plugin's `BlinkController`).
         if tracking || state_blink {
             if now >= self.next_blink {
@@ -1066,23 +1081,20 @@ impl Pet {
 
         let (fw, fh) = frame_size(state);
         let variant = if self.color == "insiders" { "insiders" } else { "stable" };
-        let sheet = asset(&format!("{}-{}.spritesheet.png", sprite_name(state, variant), {
-            // suffix handling
-            match state {
-                State::Sing => "124",
-                State::Dizzy => "128",
-                _ => "96",
-            }
-        }))
-        .or_else(|| {
-            let name = sprite_name(state, variant);
-            let suffix = match state {
-                State::Sing => "124",
-                State::Dizzy => "128",
-                _ => "96",
-            };
-            asset(&format!("{}-{}.png", name, suffix))
-        })?;
+        // Sheet suffix: tracking states use the blank-eye variant so the overlay
+        // pupils can move (mirrors `buildSpriteSource`). Sing/dizzy have their own
+        // dedicated frame sizes and never track.
+        let suffix = match state {
+            State::Sing => "124",
+            State::Dizzy => "128",
+            _ if tracking => "tracking-96",
+            _ => "96",
+        };
+        let sheet = asset(&format!("{}-{}.spritesheet.png", sprite_name(state, variant), suffix))
+            .or_else(|| {
+                let name = sprite_name(state, variant);
+                asset(&format!("{}-{}.png", name, suffix))
+            })?;
 
         let skip_body = self.halloween || now < self.wizard_invisible_until;
         let acc_def = self.accessory.as_deref().and_then(accessory_by_id);
@@ -1184,6 +1196,14 @@ impl Pet {
             return;
         }
         self.wake(now);
+        // Snap facing toward the click before playing the reaction (mirrors
+        // `showTransientState` -> `snapFacingToCursor`).
+        let center = self.left + self.display() / 2.0;
+        if cursor.0 < center {
+            self.facing = Facing::Left;
+        } else if cursor.0 > center {
+            self.facing = Facing::Right;
+        }
         if let Some(p) = &self.pong {
             let _ = p;
             return; // pong is mouse-throw only; clicks ignored while active
@@ -1210,7 +1230,6 @@ impl Pet {
         let dur = transient_duration(state);
         self.transient = Some((state, now + dur));
         self.set_state(state, now);
-        let _ = cursor;
     }
 
     pub fn begin_drag(&mut self, now: u64) {
