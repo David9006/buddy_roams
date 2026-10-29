@@ -1519,6 +1519,9 @@ impl Pet {
     }
 
     fn begin_throw(&mut self, vx: f64, vy: f64, now: u64, propeller_lift: bool) {
+        // A new flight always cancels any pending transient (waking, splat, …)
+        // so its expiry can't yank the rendered state back to the ground mid-air.
+        self.transient = None;
         // April Fools': a mouse throw starts pong.
         if self.april_fools {
             self.start_pong(now, vx, vy);
@@ -1684,9 +1687,10 @@ impl Pet {
             t.vy = t.vy.abs() * THROW_CEILING_RESTITUTION;
         }
 
-        // Mouse bounce (normal throws only; spinner/propeller glides ignore it).
-        let glide = t.spinner || t.propeller || t.propeller_lift;
-        if !glide && now >= t.grace_until {
+        // Mouse bounce: any airborne mode can be caught with the cursor while
+        // descending (mirrors the plugin's `tryMouseBounce` -> `throwBounceHandler`,
+        // which only requires a descending pet, regardless of hat mode).
+        if now >= t.grace_until {
             if let Some((cx, cy)) = cursor {
                 let contacting = cx >= t.left
                     && cx <= t.left + self.display()
