@@ -346,13 +346,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             APP.with(|cell| {
                 let mut app = cell.borrow_mut();
                 if let Some(a) = app.as_mut() {
-                    if !a.pet.on_the_run {
-                        a.dragging = true;
-                        a.mouse_down_at = now_ms();
-                        a.mouse_down_pos = (pt.x as f64, pt.y as f64);
-                        a.drag_samples = vec![(pt.x as f64, pt.y as f64, a.mouse_down_at)];
-                        a.pet.begin_drag(a.mouse_down_at);
-                    }
+                    // Always track the press so a click on the peeking pet can
+                    // bring it back on release.
+                    a.dragging = true;
+                    a.mouse_down_at = now_ms();
+                    a.mouse_down_pos = (pt.x as f64, pt.y as f64);
+                    a.drag_samples = vec![(pt.x as f64, pt.y as f64, a.mouse_down_at)];
+                    a.pet.begin_drag(a.mouse_down_at);
                 }
             });
             let _ = SetCapture(hwnd);
@@ -387,14 +387,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if a.dragging {
                         a.dragging = false;
                         let t = now_ms();
-                        let (vx, vy) = drag_velocity(&a.drag_samples, t);
-                        let moved = (pt.x as f64 - a.mouse_down_pos.0).hypot(pt.y as f64 - a.mouse_down_pos.1) > 2.0;
-                        if moved {
-                            a.pet.end_drag(t, vx, vy);
-                        } else {
+                        if a.pet.on_the_run {
+                            // Clicking the peeking pet brings it back.
                             a.pet.click(t, (pt.x as f64, pt.y as f64));
+                        } else {
+                            let (vx, vy) = drag_velocity(&a.drag_samples, t);
+                            let moved = (pt.x as f64 - a.mouse_down_pos.0).hypot(pt.y as f64 - a.mouse_down_pos.1) > 2.0;
+                            if moved {
+                                a.pet.end_drag(t, vx, vy);
+                            } else {
+                                a.pet.click(t, (pt.x as f64, pt.y as f64));
+                            }
+                            save_config(a);
                         }
-                        save_config(a);
                     }
                 }
             });
@@ -408,8 +413,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let menu = APP.with(|cell| {
                 let mut app = cell.borrow_mut();
                 match app.as_mut() {
-                    Some(a) if !a.pet.on_the_run => Some(build_pet_menu(a)),
-                    _ => None,
+                    Some(a) => Some(build_pet_menu(a)),
+                    None => None,
                 }
             });
             if let Some(menu) = menu {
