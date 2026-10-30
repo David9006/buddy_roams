@@ -19,7 +19,7 @@ Buddy Roams 桌面版 —— 把 VS Code 的 Buddy 宠物放到你的 Windows �
 - 17 顶帽子 + 特殊能力（spinner 竹蜻蜓、propeller 升力、party 点击概率、wizard 隐身 + 瞬移）。
 - 换色（Stable / Insiders / 8 种自定义）、缩放 grow/shrink、Go on the Run。
 - 节日：万圣节隐身（只露帽子 + 橙色眼球）、愚人节右向重力 + 左右 pong。
-- 原生右键菜单 + 系统托盘（显示 / 隐藏 / 退出），位置/大小/颜色/饰品持久化到
+- 原生右键菜单 + 系统托盘（右键菜单仅 Exit），位置/大小/颜色/饰品持久化到
   `%APPDATA%\BuddyRoams\config.json`。
 - 全局快捷键：`Ctrl+Alt+=` 放大、`Ctrl+Alt+-` 缩小（与 VS Code 插件一致）。
 
@@ -136,7 +136,7 @@ desktop pets (Shimeji-style).
 - Colors (Stable / Insiders / 8 custom), grow/shrink scale, Go on the Run.
 - Festivals: Halloween invisibility (hat + orange eyes), April Fools' rightward gravity + horizontal
   pong.
-- Native right-click menu + system tray (show / hide / quit); position/size/color/accessory persist
+- Native right-click menu + system tray (right-click menu with only **Exit**); position/size/color/accessory persist
   to `%APPDATA%\BuddyRoams\config.json`.
 - Global hotkeys: `Ctrl+Alt+=` to grow, `Ctrl+Alt+-` to shrink (matches the VS Code extension).
 
