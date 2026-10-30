@@ -54,8 +54,8 @@ rustup default stable
 编译运行：
 
 ```powershell
-git clone https://github.com/David9006/buddy_unleashed.git
-cd buddy_unleashed\buddy-roams-desktop
+git clone https://github.com/David9006/buddy_roams.git
+cd buddy_roams\buddy-roams-desktop
 cargo run --release
 ```
 
@@ -70,19 +70,35 @@ Windows 目标，代码无需改动：
 | amd64 | `x86_64-pc-windows-msvc` | Intel/AMD 64 位 Windows |
 | x86（32 位） | `i686-pc-windows-msvc` | 老式 32 位 Windows |
 
-交叉编译示例（在任意一台 Windows 上均可）：
+交叉编译示例（在任意一台 Windows 上均可）。下面的脚本会一次编译三个架构，并把产物
+按架构重命名到 `dist\` 目录，避免同名覆盖：
 
 ```powershell
 rustup target add x86_64-pc-windows-msvc   # amd64
 rustup target add i686-pc-windows-msvc     # x86
 rustup target add aarch64-pc-windows-msvc  # ARM64
 
-cargo build --release --target x86_64-pc-windows-msvc
-cargo build --release --target i686-pc-windows-msvc
-cargo build --release --target aarch64-pc-windows-msvc
+$targets = @{
+  "aarch64-pc-windows-msvc" = "arm64"
+  "x86_64-pc-windows-msvc"  = "amd64"
+  "i686-pc-windows-msvc"    = "x86"
+}
+
+New-Item -ItemType Directory -Force dist | Out-Null
+foreach ($t in $targets.Keys) {
+  cargo build --release --target $t
+  Copy-Item "target\$t\release\buddy-roams.exe" "dist\buddy-roams-$($targets[$t]).exe"
+}
 ```
 
-产物位于 `target\<target>\release\buddy-roams.exe`。
+产物：`dist\buddy-roams-arm64.exe`、`dist\buddy-roams-amd64.exe`、`dist\buddy-roams-x86.exe`。
+
+只编译单个架构时，手动重命名即可：
+
+```powershell
+cargo build --release --target x86_64-pc-windows-msvc
+Copy-Item target\x86_64-pc-windows-msvc\release\buddy-roams.exe dist\buddy-roams-amd64.exe
+```
 
 素材已内嵌进二进制，无需再抽取；只有需要从已安装的 VS Code 重新抽取时才运行
 `node scripts/extract-assets.mjs`。
@@ -156,8 +172,8 @@ rustup default stable
 Build & run:
 
 ```powershell
-git clone https://github.com/David9006/buddy_unleashed.git
-cd buddy_unleashed\buddy-roams-desktop
+git clone https://github.com/David9006/buddy_roams.git
+cd buddy_roams\buddy-roams-desktop
 cargo run --release
 ```
 
@@ -172,19 +188,36 @@ ARM64 Windows machine). Three Windows targets are supported with no code changes
 | amd64 | `x86_64-pc-windows-msvc` | Intel/AMD 64-bit Windows |
 | x86 (32-bit) | `i686-pc-windows-msvc` | legacy 32-bit Windows |
 
-Cross-compilation examples (from any Windows machine):
+Cross-compilation examples (from any Windows machine). The script below builds all three
+architectures at once and renames the artifacts into `dist\` by architecture, so they never
+overwrite each other:
 
 ```powershell
 rustup target add x86_64-pc-windows-msvc   # amd64
 rustup target add i686-pc-windows-msvc     # x86
 rustup target add aarch64-pc-windows-msvc  # ARM64
 
-cargo build --release --target x86_64-pc-windows-msvc
-cargo build --release --target i686-pc-windows-msvc
-cargo build --release --target aarch64-pc-windows-msvc
+$targets = @{
+  "aarch64-pc-windows-msvc" = "arm64"
+  "x86_64-pc-windows-msvc"  = "amd64"
+  "i686-pc-windows-msvc"    = "x86"
+}
+
+New-Item -ItemType Directory -Force dist | Out-Null
+foreach ($t in $targets.Keys) {
+  cargo build --release --target $t
+  Copy-Item "target\$t\release\buddy-roams.exe" "dist\buddy-roams-$($targets[$t]).exe"
+}
 ```
 
-The binary lands at `target\<target>\release\buddy-roams.exe`.
+Artifacts: `dist\buddy-roams-arm64.exe`, `dist\buddy-roams-amd64.exe`, `dist\buddy-roams-x86.exe`.
+
+To build a single architecture, rename it manually:
+
+```powershell
+cargo build --release --target x86_64-pc-windows-msvc
+Copy-Item target\x86_64-pc-windows-msvc\release\buddy-roams.exe dist\buddy-roams-amd64.exe
+```
 
 The assets are embedded in the binary; re-extraction is only needed if you want to pull them again
 from an installed VS Code (`node scripts/extract-assets.mjs`).

@@ -51,8 +51,8 @@ This is a pure-TypeScript VS Code extension (CommonJS, no Rust / WebView), curre
 ### 2. Build & debug
 
 ```bash
-git clone https://github.com/David9006/buddy_unleashed.git
-cd buddy_unleashed/buddy-roams
+git clone https://github.com/David9006/buddy_roams.git
+cd buddy_roams/buddy-roams
 
 npm install          # installs devDependencies (typescript, @types/vscode, etc.)
 npm run compile      # tsc + copy engine.js / chatPet.css into dist/
