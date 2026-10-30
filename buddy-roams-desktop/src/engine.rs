@@ -135,9 +135,11 @@ const RENDER_DURATION: u64 = 2_600;
 const SPEECH_FRAME_DURATIONS: &[u64] = &[220, 220, 220, 100, 160, 180];
 
 // Go on the Run: the pet plays the `search` animation while running away or
-// returning before the window hides/shows.
+// returning before it tucks below the screen edge, leaving just the top of its
+// head (or hat) peeking out — matching the plugin's on-the-run behavior.
 const SEARCH_FRAME_DURATIONS: &[u64] = &[500, 500, 500, 500];
 const SEARCH_DURATION: u64 = 2_000;
+const RUN_PEEK: f64 = 16.0; // px (48px display space) left visible above the edge
 
 // ---------------------------------------------------------------------------
 // States and frame tables
@@ -1376,12 +1378,17 @@ impl Pet {
     }
 
     pub fn render(&mut self, now: u64, cursor: Option<(f64, f64)>) -> Option<(Image, i64, i64)> {
-        if self.on_the_run {
-            return None;
-        }
-
-        let state = self.anim_state;
-        let frame = self.frame_index(now);
+        // While on the run the pet tucks below the screen bottom, leaving only a
+        // sliver (its hat/head) visible. It shows a single `search` frame.
+        let (state, frame, render_top) = if self.on_the_run {
+            (
+                State::Searching,
+                0usize,
+                self.floor - RUN_PEEK * self.scale * self.dpi_scale,
+            )
+        } else {
+            (self.anim_state, self.frame_index(now), self.top)
+        };
         let tracking = tracks_cursor(state);
         let state_blink = blinks(state, frame);
 
@@ -1497,13 +1504,13 @@ impl Pet {
         let w = display_img.width as i64;
         let h = display_img.height as i64;
         let cx = self.left + self.display() / 2.0;
-        let bottom = self.top + self.display();
+        let bottom = render_top + self.display();
         let x = (cx - w as f64 / 2.0).round() as i64;
         let y = (bottom - h as f64).round() as i64;
         // The display box's top-right corner (stable, independent of the throw
         // rotation) is where the combo-counter badge hangs.
         let box_right = (self.left + self.display()).round() as i64;
-        let box_top = self.top.round() as i64;
+        let box_top = render_top.round() as i64;
 
         // Composite the pet with any extra layers (speech bubble, confetti) into
         // one output image spanning the union of their bounding boxes.
@@ -1878,6 +1885,13 @@ impl Pet {
 
     pub fn click(&mut self, now: u64, cursor: (f64, f64)) {
         if self.on_the_run {
+            // Clicking the peeking pet brings it back (mirrors the plugin).
+            self.on_the_run = false;
+            self.wake(now);
+            self.place_rest();
+            self.search_target_run = false;
+            self.search_until = now + SEARCH_DURATION;
+            self.set_state(State::Searching, now);
             return;
         }
         self.wake(now);
@@ -2110,6 +2124,7 @@ impl Pet {
             && !self.dragging
             && self.pong.is_none()
             && self.search_until == 0
+            && !self.on_the_run
         {
             self.set_state(self.base_state, now);
         }
@@ -2499,16 +2514,11 @@ impl Pet {
             self.on_the_run = false;
             self.search_target_run = false;
         } else {
-            // Run away: play the search animation, then hide.
+            // Run away: play the search animation, then peek below the edge.
             self.search_target_run = true;
         }
         self.search_until = now + SEARCH_DURATION;
         self.set_state(State::Searching, now);
-    }
-
-    pub fn hide(&mut self) {
-        self.on_the_run = true;
-        self.search_until = 0;
     }
 
     pub fn show(&mut self, now: u64) {

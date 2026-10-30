@@ -42,7 +42,6 @@ const HOTKEY_SHRINK: i32 = 2;
 
 // Menu item ids.
 const ID_SHOW: usize = 1;
-const ID_HIDE: usize = 2;
 const ID_QUIT: usize = 3;
 const ID_RUN: usize = 4;
 const ID_GROW: usize = 5;
@@ -89,7 +88,6 @@ struct App {
     hwnd: isize,
     pet: Pet,
     config_path: PathBuf,
-    visible: bool,
     dragging: bool,
     mouse_down_at: u64,
     mouse_down_pos: (f64, f64),
@@ -298,10 +296,7 @@ unsafe fn build_pet_menu(app: &App) -> HMENU {
 
 unsafe fn build_tray_menu() -> HMENU {
     let menu = CreatePopupMenu().unwrap();
-    append(menu, MF_STRING, ID_SHOW, "Show Buddy");
-    append(menu, MF_STRING, ID_HIDE, "Hide Buddy");
-    append(menu, MF_SEPARATOR, 0, "");
-    append(menu, MF_STRING, ID_QUIT, "Quit");
+    append(menu, MF_STRING, ID_QUIT, "Exit");
     menu
 }
 
@@ -519,15 +514,8 @@ unsafe fn handle_command(hwnd: HWND, id: usize) {
         let Some(a) = app.as_mut() else { return };
         match id {
             ID_SHOW => {
-                let _ = ShowWindow(hwnd, SW_SHOWNA);
-                a.visible = true;
                 a.pet.show(now_ms());
                 save_config(a);
-            }
-            ID_HIDE => {
-                let _ = ShowWindow(hwnd, SW_HIDE);
-                a.visible = false;
-                a.pet.hide();
             }
             ID_QUIT => {
                 save_config(a);
@@ -590,16 +578,8 @@ unsafe fn tick_and_render(a: &mut App) {
     a.pet.tick(now, cursor, cursor_velocity);
     let frame = a.pet.render(now, cursor);
 
-    let hidden = a.pet.on_the_run;
-    if hidden != !a.visible {
-        let _ = ShowWindow(hwnd, if hidden { SW_HIDE } else { SW_SHOWNA });
-        a.visible = !hidden;
-    }
-
     if let Some((img, x, y)) = frame {
-        if a.visible {
-            present(hwnd, &img, x as i32, y as i32);
-        }
+        present(hwnd, &img, x as i32, y as i32);
     }
 }
 
@@ -663,7 +643,6 @@ fn main() {
                 hwnd: hwnd.0 as isize,
                 pet,
                 config_path: config_path(),
-                visible: true,
                 dragging: false,
                 mouse_down_at: 0,
                 mouse_down_pos: (0.0, 0.0),
