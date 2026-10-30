@@ -1,0 +1,2546 @@
+//! The Buddy pet engine: state machine, physics, rendering, accessories and
+//! festival logic, ported from the VS Code chat pet to native Rust.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::assets::{asset, Image};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const SOURCE: u32 = 96;
+const DISPLAY: f64 = 48.0;
+const MIN_SCALE: f64 = 0.4;
+const SCALE_STEP: f64 = 0.2;
+const DEFAULT_SCALE: f64 = 1.0;
+const DEFAULT_RIGHT_INSET: f64 = 32.0;
+
+const IDLE_SLEEP_DELAY: u64 = 20_000;
+const WAKE_STATE_DURATION: u64 = 880;
+
+const TRANSIENT_DURATION: u64 = 2_000;
+const COMPLETE_DURATION: u64 = 960;
+const BUTTON_PRESS_DURATION: u64 = 2_850;
+const SPLAT_DURATION: u64 = 520;
+const LOVE_DURATION: u64 = 2_940;
+const COOL_DURATION: u64 = 3_000;
+const SING_DURATION: u64 = 2_880;
+const SPEECHLESS_DURATION: u64 = 2_720;
+const WORRY_DURATION: u64 = 2_400;
+const DIZZY_DURATION: u64 = 2_200;
+
+const DRAG_THRESHOLD: f64 = 2.0;
+const THROW_MIN_VELOCITY: f64 = 650.0;
+const THROW_MAX_VELOCITY: f64 = 2_400.0;
+const THROW_GRAVITY: f64 = 1_800.0;
+// On a slow drag release the pet pops gently upward instead of dropping.
+const SLOW_RELEASE_TOSS_VELOCITY: f64 = 400.0;
+const THROW_WALL_RESTITUTION: f64 = 0.2;
+const THROW_CEILING_RESTITUTION: f64 = 0.2;
+const THROW_MAX_DURATION: u64 = 4_000;
+const MOUSE_BOUNCE_RELEASE_GRACE: u64 = 500;
+const MOUSE_BOUNCE_MIN_UP: f64 = 760.0;
+const MOUSE_BOUNCE_MAX_UP: f64 = 1_800.0;
+const MOUSE_BOUNCE_V_RESTITUTION: f64 = 0.65;
+const MOUSE_BOUNCE_UP_TRANSFER: f64 = 0.4;
+const MOUSE_BOUNCE_H_RETENTION: f64 = 0.65;
+const MOUSE_BOUNCE_H_TRANSFER: f64 = 0.35;
+const MOUSE_BOUNCE_EDGE_KICK: f64 = 320.0;
+const MOUSE_BOUNCE_MAX_H: f64 = 1_800.0;
+const CONFETTI_SCORE: u32 = 20;
+
+const BLINK_MIN_DELAY: u64 = 1_400;
+const BLINK_MAX_DELAY: u64 = 3_400;
+
+const ICON_TRANSFORMATION_CHANCE: f64 = 0.01;
+const YAPPING_CHANCE: f64 = 0.01;
+const PARTY_HAT_SPIN_CHANCE: f64 = 0.10;
+const PARTY_HAT_YAPPING_CHANCE: f64 = 0.10;
+const PARTY_HAT_SING_CHANCE: f64 = 0.20;
+
+const WIZARD_EYE_COLOR: [u8; 3] = [0xff, 0x9d, 0x2f];
+const WIZARD_INVISIBLE_DURATION: u64 = 2_200;
+const WIZARD_INVISIBLE_MIN_INTERVAL: u64 = 6_000;
+const WIZARD_INVISIBLE_MAX_INTERVAL: u64 = 14_000;
+const WIZARD_TELEPORT_CHANCE_PER_SECOND: f64 = 0.5;
+const WIZARD_TELEPORT_GRACE: u64 = 150;
+
+const WALL_IMPACT_DURATION: u64 = 48;
+
+// Normal-throw rotation (matches the plugin's `getChatPetThrowRotation`).
+const THROW_MAX_FRAME_DURATION: u64 = 32;
+const THROW_ROTATION_PER_PIXEL: f64 = 0.65;
+const THROW_SELF_RIGHTING_START_VELOCITY: f64 = -450.0;
+const THROW_SELF_RIGHTING_SPEED: f64 = 720.0;
+
+// Spinner-hat "bamboo copter": strong drag while rising, slow glide while
+// falling, head-down on the way up and a left/right sprite spin on the way down.
+const SPINNER_ASCENT_GRAVITY: f64 = 3_600.0;
+const SPINNER_DESCENT_GRAVITY: f64 = 600.0;
+const SPINNER_ASCENT_ROTATION: f64 = 180.0;
+const SPINNER_FLIP_INTERVAL: f64 = 90.0;
+
+// Propeller-hat mouse throw behaves like the spinner, with its own tuning.
+const PROPELLER_THROW_ASCENT_GRAVITY: f64 = 5_400.0;
+const PROPELLER_THROW_DESCENT_GRAVITY: f64 = 950.0;
+const PROPELLER_THROW_FLIP_INTERVAL: f64 = 90.0;
+
+// Propeller-hat "helicopter" lift (rapid facing switches wind it up).
+const PROPELLER_WIGGLE_COUNT: u32 = 4;
+const PROPELLER_WIGGLE_MAX_INTERVAL: u64 = 160;
+const PROPELLER_LIFT_UPWARD_VELOCITY: f64 = -700.0;
+const PROPELLER_ASCENT_DECELERATION: f64 = 500.0;
+const PROPELLER_DESCENT_GRAVITY: f64 = 600.0;
+const PROPELLER_FLIP_INTERVAL_START: f64 = 45.0;
+const PROPELLER_FLIP_INTERVAL_END: f64 = 160.0;
+const PROPELLER_SPIN_DECAY_TIME: f64 = 1_500.0;
+
+// Dizziness from rapid facing changes.
+const DIZZY_DIRECTION_CHANGE_COUNT: u32 = 8;
+const DIZZY_DIRECTION_CHANGE_MAX_INTERVAL: u64 = 600;
+
+// Pong
+const PONG_BALL_SPEED: f64 = 420.0;
+const PONG_PADDLE_WIDTH: f64 = 14.0;
+const PONG_PADDLE_HEIGHT: f64 = 110.0;
+const PONG_MAX_ANGLE: f64 = 60.0; // deg
+const PONG_SPIN_RATE: f64 = 0.45; // deg/ms, matches the plugin's ball spin
+
+// Confetti (20-bounce celebration).
+const CONFETTI_COUNT: usize = 24;
+const CONFETTI_GRAVITY: f64 = 600.0;
+const CONFETTI_LIFE_MS: u64 = 2_000;
+const CONFETTI_COLORS: [[u8; 3]; 6] = [
+    [0xf1, 0x4c, 0x4c],
+    [0xca, 0x66, 0x36],
+    [0xf9, 0xa8, 0x25],
+    [0x4c, 0xaf, 0x50],
+    [0x37, 0x94, 0xff],
+    [0xb1, 0x80, 0xd7],
+];
+
+// Bounce combo counter (mirrors the plugin's `.chat-pet-bounce-counter`).
+const BOUNCE_RESULT_DURATION: u64 = 5_000;
+const BADGE_BACKGROUND: [u8; 3] = [0x1e, 0x1e, 0x1e];
+const BADGE_FOREGROUND: [u8; 3] = [0xff, 0xff, 0xff];
+
+// Periodic "thinking" episodes with the speech bubble (the desktop equivalent
+// of the extension's `rendering` state, which has no AI trigger here).
+const THINK_MIN_INTERVAL: u64 = 8_000;
+const THINK_MAX_INTERVAL: u64 = 16_000;
+const RENDER_DURATION: u64 = 2_600;
+
+// Speech bubble (animated, mirrors SPEECH_FRAME_DURATIONS from the plugin).
+const SPEECH_FRAME_DURATIONS: &[u64] = &[220, 220, 220, 100, 160, 180];
+
+// Go on the Run: the pet plays the `search` animation while running away or
+// returning before it tucks below the screen edge, leaving just the top of its
+// head (or hat) peeking out — matching the plugin's on-the-run behavior.
+const SEARCH_FRAME_DURATIONS: &[u64] = &[500, 500, 500, 500];
+const SEARCH_DURATION: u64 = 2_000;
+const RUN_PEEK: f64 = 16.0; // px (48px display space) left visible above the edge
+
+// ---------------------------------------------------------------------------
+// States and frame tables
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum State {
+    Idle,
+    Sleep,
+    Waking,
+    ButtonPress,
+    Falling,
+    Splat,
+    Rendering,
+    Love,
+    Cool,
+    Sing,
+    Speechless,
+    Worry,
+    Dizzy,
+    WallImpact,
+    Yapping,
+    Complete,
+    Searching,
+}
+
+fn frame_durations(state: State) -> &'static [u64] {
+    match state {
+        State::Idle => &[40; 50],
+        State::Sleep => &[300; 8],
+        State::Waking => &[160, 100, 80, 90, 90, 90, 100, 170],
+        State::ButtonPress => &[500, 300, 350, 250, 450, 1000],
+        State::Falling => &[120, 80, 80, 120, 80, 80],
+        State::Splat => &[120, 100, 100, 200],
+        State::Rendering => &[40; 50],
+        State::Love => &[200, 200, 380, 100, 80, 1980],
+        State::Cool => &[600, 120, 120, 120, 160, 80, 80, 80, 1640],
+        State::Sing => &[180, 180, 180, 180],
+        State::Speechless => &[400, 120, 1000, 120, 1080],
+        State::Worry => &[600, 600],
+        State::Dizzy => &[120; 8],
+        State::WallImpact | State::Yapping => &[],
+        State::Complete => &[40; 50],
+        State::Searching => SEARCH_FRAME_DURATIONS,
+    }
+}
+
+fn transient_duration(state: State) -> u64 {
+    match state {
+        State::ButtonPress => BUTTON_PRESS_DURATION,
+        State::Complete => COMPLETE_DURATION,
+        State::Splat => SPLAT_DURATION,
+        State::Love => LOVE_DURATION,
+        State::Cool => COOL_DURATION,
+        State::Sing => SING_DURATION,
+        State::Speechless => SPEECHLESS_DURATION,
+        State::Worry => WORRY_DURATION,
+        State::Dizzy => DIZZY_DURATION,
+        State::Waking => WAKE_STATE_DURATION,
+        _ => TRANSIENT_DURATION,
+    }
+}
+
+fn sprite_name(state: State, variant: &str) -> String {
+    let base = match state {
+        State::Love => "buddy-love",
+        State::Cool => "buddy-cool",
+        State::ButtonPress => "buddy-press-button",
+        State::Falling => "buddy-falling",
+        State::Dizzy => "buddy-dizzy",
+        State::WallImpact => "buddy-wall-impact",
+        State::Splat => "buddy-splat",
+        State::Sleep => "buddy-sleep",
+        State::Waking => "buddy-waking",
+        State::Rendering => "buddy-rendering",
+        // `yapping` renders with the idle body (mouth-closed); the dedicated
+        // yapping sprite is only for the mouth-open frame, unused here.
+        State::Yapping => "buddy-idle",
+        State::Sing => "buddy-sing",
+        State::Speechless => "buddy-speechless",
+        State::Worry => "buddy-worry",
+        State::Searching => "buddy-search",
+        _ => "buddy-idle",
+    };
+    format!("{}-{}", base, variant)
+}
+
+fn frame_size(state: State) -> (u32, u32) {
+    match state {
+        State::Sleep | State::Waking => (120, 96),
+        State::ButtonPress => (160, 96),
+        State::Sing => (164, 124),
+        State::Dizzy => (96, 128),
+        _ => (96, 96),
+    }
+}
+
+fn tracks_cursor(state: State) -> bool {
+    !matches!(
+        state,
+        State::Sleep
+            | State::Waking
+            | State::ButtonPress
+            | State::Complete
+            | State::Love
+            | State::Cool
+            | State::Sing
+            | State::Speechless
+            | State::Worry
+            | State::Dizzy
+            | State::Falling
+            | State::WallImpact
+            | State::Splat
+            | State::Searching
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Color / tinting
+// ---------------------------------------------------------------------------
+
+pub fn body_color(color: &str) -> Option<[u8; 3]> {
+    match color {
+        "stable" | "insiders" | "" => None,
+        hex => parse_hex(hex),
+    }
+}
+
+fn parse_hex(hex: &str) -> Option<[u8; 3]> {
+    let h = hex.trim_start_matches('#');
+    let h = if h.len() == 3 {
+        format!(
+            "{}{}{}{}{}{}",
+            &h[0..1],
+            &h[0..1],
+            &h[1..2],
+            &h[1..2],
+            &h[2..3],
+            &h[2..3]
+        )
+    } else {
+        h.to_string()
+    };
+    if h.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(&h, 16).ok()?;
+    Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
+}
+
+fn darken(c: [u8; 3], f: f64) -> [u8; 3] {
+    [
+        (c[0] as f64 * (1.0 - f)).round() as u8,
+        (c[1] as f64 * (1.0 - f)).round() as u8,
+        (c[2] as f64 * (1.0 - f)).round() as u8,
+    ]
+}
+
+fn eye_color(color: &str) -> [u8; 3] {
+    // Light body colors keep the dark eye; very dark bodies get light eyes.
+    if color != "stable" && color != "insiders" {
+        if let Some(body) = parse_hex(color) {
+            if contrast(body, [0x21, 0x23, 0x24]) < 3.0 {
+                return [0xf5, 0xf5, 0xf5];
+            }
+        }
+    }
+    [0x19, 0x1a, 0x1b]
+}
+
+fn luminance(c: [u8; 3]) -> f64 {
+    let chan = |v: u8| {
+        let v = v as f64 / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * chan(c[0]) + 0.7152 * chan(c[1]) + 0.0722 * chan(c[2])
+}
+
+fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+    let (la, lb) = (luminance(a), luminance(b));
+    let (lighter, darker) = if la > lb { (la, lb) } else { (lb, la) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+fn tint(image: &Image, color: [u8; 3]) -> Image {
+    let body = color;
+    let shade = darken(color, 0.25);
+    let shadow = darken(color, 0.5);
+    let mut out = image.rgba.clone();
+    let eye = eye_color_from_rgb(color);
+    for px in out.chunks_exact_mut(4) {
+        if px[3] == 0 {
+            continue;
+        }
+        let key = ((px[0] as u32) << 16) | ((px[1] as u32) << 8) | px[2] as u32;
+        let rep = match key {
+            0x23a8f2 | 0x24bfa5 => Some(body),
+            0x0077b8 | 0x009a7c => Some(shade),
+            0x004e7c | 0x004538 | 0x006451 | 0x006652 => Some(shadow),
+            0x191a1b | 0x212324 => Some(eye),
+            _ => None,
+        };
+        if let Some(r) = rep {
+            px[0] = r[0];
+            px[1] = r[1];
+            px[2] = r[2];
+        }
+    }
+    Image {
+        width: image.width,
+        height: image.height,
+        rgba: out,
+    }
+}
+
+fn eye_color_from_rgb(color: [u8; 3]) -> [u8; 3] {
+    if contrast(color, [0x21, 0x23, 0x24]) < 3.0 {
+        [0xf5, 0xf5, 0xf5]
+    } else {
+        [0x19, 0x1a, 0x1b]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accessory rig
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum Pose {
+    Upright,
+    Sleeping,
+    Airborne,
+    Impact,
+    Splat,
+}
+
+fn pose_column(p: Pose) -> u32 {
+    match p {
+        Pose::Upright => 0,
+        Pose::Sleeping => 1,
+        Pose::Airborne => 0,
+        Pose::Impact => 2,
+        Pose::Splat => 3,
+    }
+}
+
+fn head_pivot(p: Pose) -> (u32, u32) {
+    match p {
+        Pose::Upright | Pose::Sleeping | Pose::Airborne => (48, 40),
+        Pose::Impact => (48, 32),
+        Pose::Splat => (48, 80),
+    }
+}
+
+const DEFAULT_HEAD: (i64, i64) = (48, 32);
+const DEFAULT_EYE: (i64, i64) = (56, 56);
+const HEAD_WEAR_OFFSET: i64 = 8;
+
+struct RigFrame {
+    pose: Pose,
+    head: Option<(i64, i64)>,
+    eye: Option<(i64, i64)>,
+    hide_eye_accessory: bool,
+    mirrors_head: bool,
+}
+
+fn default_pose(state: State) -> Pose {
+    match state {
+        State::Sleep | State::Waking => Pose::Sleeping,
+        State::Dizzy | State::Falling => Pose::Airborne,
+        State::WallImpact => Pose::Impact,
+        State::Splat => Pose::Splat,
+        _ => Pose::Upright,
+    }
+}
+
+fn rig_frame(state: State, frame: usize) -> RigFrame {
+    // Track spans (frame -> head/eye anchor).
+    #[derive(Clone, Copy)]
+    struct Span {
+        first: usize,
+        last: usize,
+        head: (i64, i64),
+        eye: (i64, i64),
+        pose: Option<Pose>,
+        hide_eye: bool,
+        mirrors_head: bool,
+    }
+    let spans: &[Span] = match state {
+        State::Idle | State::Rendering => &[
+            Span { first: 0, last: 19, head: DEFAULT_HEAD, eye: DEFAULT_EYE, pose: None, hide_eye: false, mirrors_head: false },
+            Span { first: 20, last: 49, head: (48, 36), eye: (56, 60), pose: None, hide_eye: false, mirrors_head: false },
+        ],
+        State::Sleep => &[
+            Span { first: 0, last: 2, head: DEFAULT_HEAD, eye: (56, 64), pose: None, hide_eye: false, mirrors_head: false },
+            Span { first: 3, last: 7, head: (48, 36), eye: (56, 64), pose: None, hide_eye: false, mirrors_head: false },
+        ],
+        State::Waking => &[
+            Span { first: 0, last: 2, head: (48, 36), eye: (56, 64), pose: Some(Pose::Sleeping), hide_eye: false, mirrors_head: false },
+            Span { first: 3, last: 7, head: DEFAULT_HEAD, eye: DEFAULT_EYE, pose: Some(Pose::Upright), hide_eye: false, mirrors_head: false },
+        ],
+        State::Love => &[
+            Span { first: 0, last: 3, head: (48, 36), eye: DEFAULT_EYE, pose: None, hide_eye: false, mirrors_head: false },
+            Span { first: 4, last: 5, head: DEFAULT_HEAD, eye: DEFAULT_EYE, pose: None, hide_eye: false, mirrors_head: false },
+        ],
+        State::Cool => &[
+            Span { first: 0, last: 1, head: DEFAULT_HEAD, eye: DEFAULT_EYE, pose: None, hide_eye: false, mirrors_head: false },
+            Span { first: 2, last: 2, head: (48, 36), eye: DEFAULT_EYE, pose: None, hide_eye: false, mirrors_head: false },
+            Span { first: 3, last: 8, head: DEFAULT_HEAD, eye: DEFAULT_EYE, pose: None, hide_eye: false, mirrors_head: false },
+        ],
+        State::Sing => &[
+            Span { first: 0, last: 3, head: (48, 52), eye: (56, 72), pose: None, hide_eye: false, mirrors_head: false },
+        ],
+        State::Worry => &[
+            Span { first: 0, last: 0, head: DEFAULT_HEAD, eye: DEFAULT_EYE, pose: None, hide_eye: false, mirrors_head: false },
+            Span { first: 1, last: 1, head: DEFAULT_HEAD, eye: DEFAULT_EYE, pose: None, hide_eye: false, mirrors_head: true },
+        ],
+        State::Dizzy => &[
+            Span { first: 0, last: 7, head: (48, 48), eye: DEFAULT_EYE, pose: None, hide_eye: true, mirrors_head: false },
+        ],
+        State::Falling => &[
+            Span { first: 0, last: 5, head: DEFAULT_HEAD, eye: (48, 48), pose: None, hide_eye: false, mirrors_head: false },
+        ],
+        State::Splat => &[
+            Span { first: 0, last: 0, head: (48, 72), eye: DEFAULT_EYE, pose: Some(Pose::Splat), hide_eye: true, mirrors_head: false },
+            Span { first: 1, last: 1, head: (48, 64), eye: DEFAULT_EYE, pose: Some(Pose::Splat), hide_eye: true, mirrors_head: false },
+            Span { first: 2, last: 2, head: (48, 48), eye: DEFAULT_EYE, pose: Some(Pose::Splat), hide_eye: true, mirrors_head: false },
+            Span { first: 3, last: 3, head: DEFAULT_HEAD, eye: DEFAULT_EYE, pose: Some(Pose::Upright), hide_eye: false, mirrors_head: false },
+        ],
+        _ => &[],
+    };
+    let mut span = None;
+    for s in spans {
+        if frame >= s.first && frame <= s.last {
+            span = Some(*s);
+            break;
+        }
+    }
+    let head = span.map(|s| s.head).unwrap_or(DEFAULT_HEAD);
+    let hide_eye = span.map(|s| s.hide_eye).unwrap_or(false)
+        || matches!(
+            state,
+            State::Love
+                | State::Complete
+                | State::Cool
+                | State::Speechless
+                | State::Worry
+                | State::Dizzy
+                | State::WallImpact
+        );
+    let pose = span.and_then(|s| s.pose).unwrap_or(default_pose(state));
+    let eye = if hide_eye {
+        None
+    } else {
+        Some(span.map(|s| s.eye).unwrap_or(DEFAULT_EYE))
+    };
+    let head = if matches!(state, State::Love | State::Complete | State::Dizzy) {
+        None
+    } else {
+        Some((head.0, head.1 + HEAD_WEAR_OFFSET))
+    };
+    RigFrame {
+        pose,
+        head,
+        eye,
+        hide_eye_accessory: hide_eye,
+        mirrors_head: span.map(|s| s.mirrors_head).unwrap_or(false),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Image helpers
+// ---------------------------------------------------------------------------
+
+fn blit(dst: &mut Image, src: &Image, dx: i64, dy: i64, sx: u32, sy: u32, sw: u32, sh: u32) {
+    for y in 0..sh as i64 {
+        let dyy = dy + y;
+        if dyy < 0 || dyy >= dst.height as i64 {
+            continue;
+        }
+        for x in 0..sw as i64 {
+            let dxx = dx + x;
+            if dxx < 0 || dxx >= dst.width as i64 {
+                continue;
+            }
+            let si = (((sy as i64 + y) * src.width as i64 + (sx as i64 + x)) * 4) as usize;
+            let di = ((dyy * dst.width as i64 + dxx) * 4) as usize;
+            let sa = src.rgba[si + 3] as u32;
+            if sa == 0 {
+                continue;
+            }
+            if sa == 255 {
+                dst.rgba[di..di + 4].copy_from_slice(&src.rgba[si..si + 4]);
+            } else {
+                let da = dst.rgba[di + 3] as u32;
+                let out_a = sa + da * (255 - sa) / 255;
+                if out_a == 0 {
+                    continue;
+                }
+                for c in 0..3 {
+                    let s = src.rgba[si + c] as u32;
+                    let d = dst.rgba[di + c] as u32;
+                    dst.rgba[di + c] = ((s * sa + d * da * (255 - sa) / 255) / out_a) as u8;
+                }
+                dst.rgba[di + 3] = out_a as u8;
+            }
+        }
+    }
+}
+
+fn clear_rect(dst: &mut Image, x: i64, y: i64, w: i64, h: i64) {
+    for yy in y..y + h {
+        if yy < 0 || yy >= dst.height as i64 {
+            continue;
+        }
+        for xx in x..x + w {
+            if xx < 0 || xx >= dst.width as i64 {
+                continue;
+            }
+            let i = ((yy * dst.width as i64 + xx) * 4) as usize;
+            dst.rgba[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
+        }
+    }
+}
+
+fn mirror(img: &Image) -> Image {
+    let mut out = vec![0u8; img.rgba.len()];
+    let w = img.width as usize;
+    for y in 0..img.height as usize {
+        for x in 0..w {
+            let s = (y * w + x) * 4;
+            let d = (y * w + (w - 1 - x)) * 4;
+            out[d..d + 4].copy_from_slice(&img.rgba[s..s + 4]);
+        }
+    }
+    Image {
+        width: img.width,
+        height: img.height,
+        rgba: out,
+    }
+}
+
+/// Fills an axis-aligned rectangle with a solid color at the given opacity,
+/// alpha-blending over whatever is already in `dst`.
+fn fill_rect(dst: &mut Image, x: i64, y: i64, w: i64, h: i64, color: [u8; 3], alpha: u8) {
+    let sa = alpha as u32;
+    if sa == 0 {
+        return;
+    }
+    for yy in y..y + h {
+        if yy < 0 || yy >= dst.height as i64 {
+            continue;
+        }
+        for xx in x..x + w {
+            if xx < 0 || xx >= dst.width as i64 {
+                continue;
+            }
+            let i = ((yy * dst.width as i64 + xx) * 4) as usize;
+            let da = dst.rgba[i + 3] as u32;
+            let out_a = sa + da * (255 - sa) / 255;
+            if out_a == 0 {
+                continue;
+            }
+            for c in 0..3 {
+                let s = color[c] as u32;
+                let d = dst.rgba[i + c] as u32;
+                dst.rgba[i + c] = ((s * sa + d * da * (255 - sa) / 255) / out_a) as u8;
+            }
+            dst.rgba[i + 3] = out_a as u8;
+        }
+    }
+}
+
+/// Fills a rounded rectangle (used for the combo counter badge), opaque.
+fn fill_rounded_rect(dst: &mut Image, x: i64, y: i64, w: i64, h: i64, r: i64, color: [u8; 3]) {
+    let r = r.max(0).min((w / 2).max(0)).min((h / 2).max(0));
+    // Corner circle centers.
+    let cx_l = x + r;
+    let cx_r = x + w - r;
+    let cy_t = y + r;
+    let cy_b = y + h - r;
+    for yy in y..y + h {
+        if yy < 0 || yy >= dst.height as i64 {
+            continue;
+        }
+        for xx in x..x + w {
+            if xx < 0 || xx >= dst.width as i64 {
+                continue;
+            }
+            let mut inside = true;
+            if xx < cx_l && yy < cy_t {
+                let dx = cx_l - xx;
+                let dy = cy_t - yy;
+                inside = dx * dx + dy * dy <= r * r;
+            } else if xx >= cx_r && yy < cy_t {
+                let dx = xx - cx_r + 1;
+                let dy = cy_t - yy;
+                inside = dx * dx + dy * dy <= r * r;
+            } else if xx < cx_l && yy >= cy_b {
+                let dx = cx_l - xx;
+                let dy = yy - cy_b + 1;
+                inside = dx * dx + dy * dy <= r * r;
+            } else if xx >= cx_r && yy >= cy_b {
+                let dx = xx - cx_r + 1;
+                let dy = yy - cy_b + 1;
+                inside = dx * dx + dy * dy <= r * r;
+            }
+            if inside {
+                let i = ((yy * dst.width as i64 + xx) * 4) as usize;
+                dst.rgba[i] = color[0];
+                dst.rgba[i + 1] = color[1];
+                dst.rgba[i + 2] = color[2];
+                dst.rgba[i + 3] = 255;
+            }
+        }
+    }
+}
+
+/// Frame index for a looping frame-duration table (shared by the pet body and
+/// the speech-bubble animation).
+fn frame_index_for(durs: &[u64], elapsed: u64) -> usize {
+    if durs.is_empty() {
+        return 0;
+    }
+    let total: u64 = durs.iter().sum();
+    let mut e = elapsed % total;
+    for (i, d) in durs.iter().enumerate() {
+        if e < *d {
+            return i;
+        }
+        e -= d;
+    }
+    durs.len() - 1
+}
+
+/// Whether the segment from (x0,y0) to (x1,y1) intersects the axis-aligned
+/// rectangle [rx, rx+rw] x [ry, ry+rh]. Used so a fast cursor that jumps over
+/// the pet between frames still registers as a catch (mirrors the plugin's
+/// swept `getChatPetMouseCollisionTime`).
+fn segment_intersects_rect(
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    rx: f64,
+    ry: f64,
+    rw: f64,
+    rh: f64,
+) -> bool {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let mut tmin = 0.0f64;
+    let mut tmax = 1.0f64;
+
+    if dx.abs() < 1e-9 {
+        if x0 < rx || x0 > rx + rw {
+            return false;
+        }
+    } else {
+        let t1 = (rx - x0) / dx;
+        let t2 = (rx + rw - x0) / dx;
+        let (ta, tb) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
+        tmin = tmin.max(ta);
+        tmax = tmax.min(tb);
+        if tmin > tmax {
+            return false;
+        }
+    }
+    if dy.abs() < 1e-9 {
+        if y0 < ry || y0 > ry + rh {
+            return false;
+        }
+    } else {
+        let t1 = (ry - y0) / dy;
+        let t2 = (ry + rh - y0) / dy;
+        let (ta, tb) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
+        tmin = tmin.max(ta);
+        tmax = tmax.min(tb);
+        if tmin > tmax {
+            return false;
+        }
+    }
+    true
+}
+
+/// 3x5 pixel-digit patterns (bit 2 = left column, bit 0 = right column).
+fn digit_pattern(d: u8) -> [u8; 5] {
+    match d {
+        b'0' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        b'1' => [0b010, 0b110, 0b010, 0b010, 0b111],
+        b'2' => [0b111, 0b001, 0b111, 0b100, 0b111],
+        b'3' => [0b111, 0b001, 0b111, 0b001, 0b111],
+        b'4' => [0b101, 0b101, 0b111, 0b001, 0b001],
+        b'5' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        b'6' => [0b111, 0b100, 0b111, 0b101, 0b111],
+        b'7' => [0b111, 0b001, 0b010, 0b010, 0b010],
+        b'8' => [0b111, 0b101, 0b111, 0b101, 0b111],
+        b'9' => [0b111, 0b101, 0b111, 0b001, 0b111],
+        _ => [0, 0, 0, 0, 0],
+    }
+}
+
+/// Draws a decimal string as tiny 3x5 digits at pixel size `px`, returning the
+/// total width drawn.
+fn draw_digits(dst: &mut Image, x: i64, y: i64, text: &str, color: [u8; 3], px: u32) -> i64 {
+    let p = px.max(1) as i64;
+    let mut ox = x;
+    for ch in text.bytes() {
+        let pat = digit_pattern(ch);
+        for (r, row) in pat.iter().enumerate() {
+            for c in 0..3 {
+                if row & (1 << (2 - c)) != 0 {
+                    fill_rect(dst, ox + c as i64 * p, y + r as i64 * p, p, p, color, 255);
+                }
+            }
+        }
+        ox += 4 * p;
+    }
+    ox - x
+}
+
+fn scale_nearest(img: &Image, w: u32, h: u32) -> Image {
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        let sy = (y as f64 * img.height as f64 / h as f64) as u32;
+        for x in 0..w {
+            let sx = (x as f64 * img.width as f64 / w as f64) as u32;
+            let si = ((sy * img.width + sx) * 4) as usize;
+            let di = ((y * w + x) * 4) as usize;
+            out[di..di + 4].copy_from_slice(&img.rgba[si..si + 4]);
+        }
+    }
+    Image {
+        width: w,
+        height: h,
+        rgba: out,
+    }
+}
+
+/// Rotates an image by `angle` degrees (counter-clockwise for a positive
+/// angle) using nearest-neighbor sampling into a tight bounding box.
+fn rotate(img: &Image, angle: f64) -> Image {
+    let rad = angle.to_radians();
+    let (sin, cos) = rad.sin_cos();
+    let (asin, acos) = (sin.abs(), cos.abs());
+    let w = img.width as f64;
+    let h = img.height as f64;
+    let nw = (h * asin + w * acos).ceil() as u32;
+    let nh = (h * acos + w * asin).ceil() as u32;
+    let mut out = vec![0u8; (nw * nh * 4) as usize];
+    let cx = w / 2.0;
+    let cy = h / 2.0;
+    let ncx = nw as f64 / 2.0;
+    let ncy = nh as f64 / 2.0;
+    for y in 0..nh {
+        for x in 0..nw {
+            let dx = x as f64 - ncx;
+            let dy = y as f64 - ncy;
+            let sx = (dx * cos - dy * sin) + cx;
+            let sy = (dx * sin + dy * cos) + cy;
+            if sx < 0.0 || sy < 0.0 || sx >= w - 1.0 || sy >= h - 1.0 {
+                continue;
+            }
+            let si = ((sy as u32 * img.width + sx as u32) * 4) as usize;
+            let di = ((y * nw + x) * 4) as usize;
+            out[di..di + 4].copy_from_slice(&img.rgba[si..si + 4]);
+        }
+    }
+    Image {
+        width: nw,
+        height: nh,
+        rgba: out,
+    }
+}
+
+/// 90-degree rotation, counter-clockwise.
+fn rotate_ccw90(img: &Image) -> Image {
+    let (w, h) = (img.width as usize, img.height as usize);
+    let mut out = vec![0u8; img.rgba.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let s = (y * w + x) * 4;
+            let d = ((w - 1 - x) * h + y) * 4;
+            out[d..d + 4].copy_from_slice(&img.rgba[s..s + 4]);
+        }
+    }
+    Image {
+        width: img.height,
+        height: img.width,
+        rgba: out,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accessory atlas drawing
+// ---------------------------------------------------------------------------
+
+struct Accessory {
+    id: &'static str,
+    label: &'static str,
+    atlas: &'static str,
+    mirrors_eye: bool,
+    covers_antennae: bool,
+}
+
+const ACCESSORIES: &[Accessory] = &[
+    Accessory { id: "topHatMonocle", label: "Grand Top Hat & Monocle", atlas: "grand-top-hat-monocle", mirrors_eye: false, covers_antennae: true },
+    Accessory { id: "cowboyHat", label: "Cowboy Hat", atlas: "cowboy-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "baseballCap", label: "Baseball Cap", atlas: "baseball-cap", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "constructionHardHat", label: "Construction Hard Hat", atlas: "construction-hard-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "firefighterHelmet", label: "Firefighter Helmet", atlas: "firefighter-helmet", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "crown", label: "Crown", atlas: "crown", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "propellerHat", label: "Propeller Hat", atlas: "propeller-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "darkSailorHat", label: "Dark Sailor Hat", atlas: "dark-sailor-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "whiteChefHat", label: "White Chef Hat", atlas: "white-chef-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "bambooHat", label: "Bamboo Hat", atlas: "bamboo-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "strawHat", label: "Straw Hat", atlas: "straw-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "pinkPartyHat", label: "Pink Party Hat", atlas: "pink-party-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "wizardHat", label: "Wizard Hat", atlas: "wizard-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "sailorHat", label: "Sailor Hat", atlas: "sailor-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "spinnerHat", label: "Spinner Hat", atlas: "full-size-spinner-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "partyHat", label: "Party Hat", atlas: "leaning-party-hat", mirrors_eye: true, covers_antennae: true },
+    Accessory { id: "artistBeret", label: "Artist Beret", atlas: "artist-beret", mirrors_eye: true, covers_antennae: true },
+];
+
+pub fn accessory_labels() -> Vec<(&'static str, &'static str)> {
+    ACCESSORIES
+        .iter()
+        .map(|a| (a.id, a.label))
+        .collect()
+}
+
+fn accessory_by_id(id: &str) -> Option<&'static Accessory> {
+    ACCESSORIES.iter().find(|a| a.id == id)
+}
+
+// ---------------------------------------------------------------------------
+// Composite rendering
+// ---------------------------------------------------------------------------
+
+fn draw_accessory_layer(
+    dst: &mut Image,
+    atlas: &Image,
+    pose_col: u32,
+    layer: u32,
+    head: (i64, i64),
+    cell: u32,
+    mirror: bool,
+    frame_w: u32,
+) {
+    let src_y = if layer == 0 { 0 } else { cell };
+    let pivot = head_pivot(pose_from_col(pose_col));
+    let mut dx = head.0 - pivot.0 as i64;
+    let dy = head.1 - pivot.1 as i64;
+    if mirror {
+        dx = frame_w as i64 - dx - cell as i64;
+    }
+    blit(dst, atlas, dx, dy, pose_col * cell, src_y, cell, cell);
+}
+
+fn pose_from_col(col: u32) -> Pose {
+    match col {
+        1 => Pose::Sleeping,
+        2 => Pose::Impact,
+        3 => Pose::Splat,
+        _ => Pose::Upright,
+    }
+}
+
+fn draw_eye_accessory(
+    dst: &mut Image,
+    atlas: &Image,
+    pose_col: u32,
+    cell: u32,
+    anchor: (i64, i64),
+    mirror: bool,
+    frame_w: u32,
+) {
+    let mut dx = anchor.0;
+    let dy = anchor.1;
+    if mirror {
+        dx = frame_w as i64 - dx - cell as i64;
+    }
+    blit(dst, atlas, dx, dy, pose_col * cell, 2 * cell, cell, cell);
+}
+
+fn antennae_bounds(rf: &RigFrame) -> Option<(i64, i64, i64, i64)> {
+    let head = rf.head?;
+    if matches!(rf.pose, Pose::Impact) {
+        Some((16, 24, 64, 8))
+    } else {
+        Some((head.0 - 32, head.1 - 48, 64, 40))
+    }
+}
+
+/// Renders a single frame of the pet at source resolution into `dst`.
+#[allow(clippy::too_many_arguments)]
+fn composite_frame(
+    dst: &mut Image,
+    body: &Image,
+    accessory: Option<(&Image, &Accessory)>,
+    frame: usize,
+    state: State,
+    facing_left: bool,
+    color: &str,
+    skip_body: bool,
+) {
+    let (fw, fh) = frame_size(state);
+    // clear
+    for p in dst.rgba.iter_mut() {
+        *p = 0;
+    }
+    let rf = rig_frame(state, frame);
+    let pose_col = pose_column(rf.pose);
+    let tinted = match body_color(color) {
+        Some(c) => tint(body, c),
+        None => (*body).clone(),
+    };
+    let src_x = (frame as u32 * fw).min(body.width.saturating_sub(fw));
+
+    // Draw the body frame (optionally mirrored) into `d`.
+    let mirror_body = |d: &mut Image| {
+        let mut frame = Image { width: fw, height: fh, rgba: vec![0; (fw * fh * 4) as usize] };
+        blit(&mut frame, &tinted, 0, 0, src_x, 0, fw, fh);
+        if facing_left {
+            let m = mirror(&frame);
+            blit(d, &m, 0, 0, 0, 0, fw, fh);
+        } else {
+            blit(d, &frame, 0, 0, 0, 0, fw, fh);
+        }
+    };
+
+    if let Some((atlas, acc)) = accessory {
+        let cell = atlas.width / 4;
+        let mut back = Image { width: fw, height: fh, rgba: vec![0; (fw * fh * 4) as usize] };
+        if let Some(head) = rf.head {
+            draw_accessory_layer(&mut back, atlas, pose_col, 0, head, cell, facing_left, fw);
+        }
+        // Body drawn over the back layer.
+        let mut body_buf = Image { width: fw, height: fh, rgba: vec![0; (fw * fh * 4) as usize] };
+        if !skip_body {
+            mirror_body(&mut body_buf);
+        }
+        // Clear antennae so the back hat layer shows through.
+        if acc.covers_antennae {
+            if let Some(b) = antennae_bounds(&rf) {
+                let x = if facing_left { fw as i64 - b.0 - b.2 } else { b.0 };
+                clear_rect(&mut body_buf, x, b.1, b.2, b.3);
+            }
+        }
+        // Compose: back, then body, then front, then eye accessory.
+        blit(dst, &back, 0, 0, 0, 0, fw, fh);
+        blit(dst, &body_buf, 0, 0, 0, 0, fw, fh);
+        if let Some(head) = rf.head {
+            let m = facing_left || rf.mirrors_head;
+            draw_accessory_layer(dst, atlas, pose_col, 1, head, cell, m, fw);
+        }
+        if let Some(eye) = rf.eye {
+            let mut anchor = eye;
+            if facing_left && !acc.mirrors_eye {
+                anchor.0 = anchor.0 - 16 + fw as i64 - 96;
+            }
+            let m = facing_left && acc.mirrors_eye;
+            draw_eye_accessory(dst, atlas, pose_col, cell, anchor, m, fw);
+        }
+    } else if !skip_body {
+        mirror_body(dst);
+    }
+}
+
+// Eye geometry, ported from the VS Code chatPet CSS (48px display space).
+// The eye is a small pupil drawn in `currentColor`; the body sprite's baked-in
+// dark eyes are covered exactly by this pupil, and gaze translates it by 2px
+// per gaze unit — the same way the plugin's `.chat-pet-pupil` works.
+const EYE_TOP: f64 = 30.0;
+const EYE_TOP_LOVE: f64 = 31.0;
+const EYE_LEFT_LEFT: f64 = 18.0; // facing right
+const EYE_LEFT_RIGHT: f64 = 30.0; // facing right
+const EYE_LEFT_LEFT_FACING_LEFT: f64 = 22.0;
+const EYE_LEFT_RIGHT_FACING_LEFT: f64 = 10.0;
+const PUPIL_OFFSET: f64 = 2.0;
+const PUPIL_WIDTH: f64 = 4.0;
+const PUPIL_HEIGHT: f64 = 4.0;
+const PUPIL_HEIGHT_TALL: f64 = 8.0;
+const PUPIL_HEIGHT_LOVE: f64 = 7.0;
+const GAZE_PIXELS_PER_UNIT: f64 = 2.0;
+const BLINK_DURATION: u64 = 260; // matches chat-pet-eye-blink 260ms
+
+/// `doesChatPetStateBlink` from the plugin: some states keep the eyes visible
+/// without gaze tracking.
+fn blinks(state: State, frame: usize) -> bool {
+    (state == State::ButtonPress || state == State::Love)
+        && (state != State::ButtonPress || frame + 1 != frame_durations(State::ButtonPress).len())
+}
+
+/// Continuous throw rotation with self-righting, mirroring the plugin's
+/// `getChatPetThrowRotation`. The pet tumbles proportional to horizontal travel
+/// and snaps back upright as its vertical velocity approaches zero.
+fn throw_rotation_step(rotation: f64, horizontal: f64, vy: f64, elapsed: f64) -> f64 {
+    let self_righting = ((vy - THROW_SELF_RIGHTING_START_VELOCITY) / -THROW_SELF_RIGHTING_START_VELOCITY)
+        .clamp(0.0, 1.0);
+    let next = rotation + horizontal * THROW_ROTATION_PER_PIXEL * (1.0 - self_righting);
+    let upright = if horizontal > 0.0 {
+        (next / 360.0).ceil() * 360.0
+    } else if horizontal < 0.0 {
+        (next / 360.0).floor() * 360.0
+    } else {
+        (next / 360.0).round() * 360.0
+    };
+    let delta = upright - next;
+    let max_correction = THROW_SELF_RIGHTING_SPEED * elapsed.max(0.0) * self_righting;
+    if delta.abs() <= max_correction {
+        upright
+    } else {
+        next + delta.signum() * max_correction
+    }
+}
+
+/// Renders the eyes layer, faithfully mirroring the plugin's `.chat-pet-eyes`
+/// overlay: only visible when the state tracks the cursor or is a blink state,
+/// the pupil color is `getChatPetEyeColor`, and gaze shifts it by 2px per unit.
+/// While a random blink is active the pupil is squashed to a 2px strip.
+fn draw_eyes(
+    dst: &mut Image,
+    display: f64,
+    eye_color: [u8; 3],
+    gaze: (f64, f64),
+    facing_left: bool,
+    blinking: bool,
+    state: State,
+) {
+    let s = display / 48.0;
+    let (left_x, right_x) = if facing_left {
+        (EYE_LEFT_LEFT_FACING_LEFT, EYE_LEFT_RIGHT_FACING_LEFT)
+    } else {
+        (EYE_LEFT_LEFT, EYE_LEFT_RIGHT)
+    };
+    let top = if state == State::Love { EYE_TOP_LOVE } else { EYE_TOP };
+    let pupil_h = if matches!(
+        state,
+        State::Idle | State::Rendering | State::ButtonPress | State::Yapping
+    ) {
+        PUPIL_HEIGHT_TALL
+    } else if state == State::Love {
+        PUPIL_HEIGHT_LOVE
+    } else {
+        PUPIL_HEIGHT
+    };
+
+    for ex in [left_x, right_x] {
+        let px = (ex + PUPIL_OFFSET + gaze.0 * GAZE_PIXELS_PER_UNIT) * s;
+        let py = (top + PUPIL_OFFSET + gaze.1 * GAZE_PIXELS_PER_UNIT) * s;
+        let x0 = px.round() as i64;
+        let y0 = py.round() as i64;
+        let w = (PUPIL_WIDTH * s).round().max(1.0) as i64;
+        let h = (pupil_h * s).round().max(1.0) as i64;
+
+        // The CSS blink animation clips the pupil to a thin horizontal strip
+        // (inset(1px 0) / inset(3px 0)); approximate with the middle 2px.
+        let (y_start, y_end) = if blinking && h >= 2 {
+            (y0 + (h - 2) / 2, y0 + (h - 2) / 2 + 2)
+        } else {
+            (y0, y0 + h)
+        };
+
+        for y in y_start..y_end {
+            for x in x0..x0 + w {
+                if x < 0 || y < 0 || x >= dst.width as i64 || y >= dst.height as i64 {
+                    continue;
+                }
+                let i = ((y * dst.width as i64 + x) * 4) as usize;
+                dst.rgba[i] = eye_color[0];
+                dst.rgba[i + 1] = eye_color[1];
+                dst.rgba[i + 2] = eye_color[2];
+                dst.rgba[i + 3] = 255;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pet state
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Facing {
+    Left,
+    Right,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Config {
+    pub color: String,
+    pub accessory: Option<String>,
+    pub scale: f64,
+    pub position_x: Option<f64>,
+    pub position_y: Option<f64>,
+}
+
+pub struct Pet {
+    // Position: top-left of the 48*scale display box, in screen CSS px.
+    pub left: f64,
+    pub top: f64,
+    pub floor: f64,      // screen height (CSS px)
+    pub screen_w: f64,   // screen width
+    pub scale: f64,
+    pub dpi_scale: f64,
+    pub color: String,
+    pub accessory: Option<String>,
+
+    base_state: State,
+    transient: Option<(State, u64)>,
+    last_click: Option<State>,
+    dragging: bool,
+    facing: Facing,
+    gaze: (f64, f64),
+    // Random blink controller (mirrors the plugin's BlinkController).
+    blinking: bool,
+    blink_end: u64,
+    next_blink: u64,
+    idle_since: u64,
+
+    // animation
+    anim_state: State,
+    anim_start: u64,
+
+    // throw physics
+    throw: Option<ThrowMotion>,
+    bounce_count: u32,
+    bounce_grace_until: u64,
+    // combo count shown briefly after landing (mirrors the plugin's counter)
+    bounce_result_count: u32,
+    bounce_result_until: u64,
+
+    // direction-change dizzy tracking
+    last_dir: Option<Facing>,
+    last_dir_change: u64,
+    dir_change_count: u32,
+
+    // propeller-hat wiggle (rapid facing switches that wind up the lift)
+    propeller_wiggle_count: u32,
+    propeller_wiggle_last: u64,
+
+    // wizard
+    wizard_invisible_until: u64,
+    wizard_next_episode: u64,
+
+    // april fools
+    pub april_fools: bool,
+    gravity_pose: bool,
+    // pong
+    pong: Option<Pong>,
+    pub pong_score: u32,
+
+    // go on the run
+    pub on_the_run: bool,
+    // While non-zero, the pet is playing the run-away / return `search`
+    // animation; when it expires, `search_target_run` is applied.
+    search_until: u64,
+    search_target_run: bool,
+
+    // periodic "thinking" (rendering) episodes with the speech bubble
+    next_think: u64,
+
+    // confetti particles (20-bounce celebration)
+    confetti: Vec<ConfettiParticle>,
+    confetti_last: u64,
+
+    // previous cursor position (for swept mouse-bounce collision detection)
+    prev_cursor: Option<(f64, f64)>,
+
+    // halloween
+    pub halloween: bool,
+
+    rng_state: u64,
+}
+
+struct ThrowMotion {
+    left: f64,
+    top: f64,
+    vx: f64,
+    vy: f64,
+    start: u64,
+    last_frame: u64,
+    rotation: f64,
+    spin_elapsed: f64,
+    flip_accumulator: f64,
+    spinner: bool,
+    propeller: bool,
+    propeller_lift: bool,
+    grace_until: u64,
+    cursor_contacting: bool,
+    wall_impact_until: u64,
+}
+
+struct Pong {
+    ball_x: f64,
+    ball_y: f64,
+    vx: f64,
+    vy: f64,
+    paddle_y: f64,
+    start: u64,
+    last_frame: u64,
+    rotation: f64,
+}
+
+struct ConfettiParticle {
+    x: f64,
+    y: f64,
+    vx: f64,
+    vy: f64,
+    w: u32,
+    h: u32,
+    color: [u8; 3],
+    born: u64,
+    life: u64,
+}
+
+/// Time-based seed so the spawn point and interaction randomness differ between
+/// launches (the previous fixed seed made the "random" spawn deterministic).
+fn random_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9e3779b97f4a7c15)
+        .max(1)
+}
+
+impl Pet {
+    pub fn new(
+        floor: f64,
+        screen_w: f64,
+        cfg: Config,
+        april_fools: bool,
+        halloween: bool,
+        dpi_scale: f64,
+    ) -> Self {
+        let mut p = Pet {
+            left: 0.0,
+            top: 0.0,
+            floor,
+            screen_w,
+            scale: cfg.scale.max(MIN_SCALE),
+            dpi_scale: dpi_scale.max(1.0),
+            color: cfg.color,
+            accessory: cfg.accessory,
+            base_state: State::Idle,
+            transient: None,
+            last_click: None,
+            dragging: false,
+            facing: Facing::Right,
+            gaze: (0.0, 0.0),
+            blinking: false,
+            blink_end: 0,
+            next_blink: 0,
+            idle_since: 0,
+            anim_state: State::Idle,
+            anim_start: 0,
+            throw: None,
+            bounce_count: 0,
+            bounce_grace_until: 0,
+            bounce_result_count: 0,
+            bounce_result_until: 0,
+            last_dir: None,
+            last_dir_change: 0,
+            dir_change_count: 0,
+            propeller_wiggle_count: 0,
+            propeller_wiggle_last: 0,
+            wizard_invisible_until: 0,
+            wizard_next_episode: 0,
+            april_fools,
+            gravity_pose: false,
+            pong: None,
+            pong_score: 0,
+            on_the_run: false,
+            search_until: 0,
+            search_target_run: false,
+            next_think: 0,
+            confetti: Vec::new(),
+            confetti_last: 0,
+            prev_cursor: None,
+            halloween,
+            rng_state: random_seed(),
+        };
+        if let Some(x) = cfg.position_x {
+            p.left = x;
+        }
+        if let Some(y) = cfg.position_y {
+            p.top = y;
+        }
+        p.place_rest();
+        p
+    }
+
+    fn rng(&mut self) -> f64 {
+        self.rng_state ^= self.rng_state << 13;
+        self.rng_state ^= self.rng_state >> 7;
+        self.rng_state ^= self.rng_state << 17;
+        (self.rng_state >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn display(&self) -> f64 {
+        DISPLAY * self.scale * self.dpi_scale
+    }
+
+    fn max_left(&self) -> f64 {
+        (self.screen_w - self.display()).max(0.0)
+    }
+
+    fn max_top(&self) -> f64 {
+        (self.floor - self.display()).max(0.0)
+    }
+
+    pub fn place_rest(&mut self) {
+        if self.on_the_run {
+            return;
+        }
+        if self.april_fools {
+            // Rest against the right wall; vertical axis is the free axis.
+            self.left = self.screen_w - self.display();
+            if self.top == 0.0 {
+                self.top = self.rng() * self.max_top();
+            }
+            self.gravity_pose = true;
+        } else {
+            if self.top == 0.0 {
+                self.left = self.rng() * self.max_left();
+            }
+            self.top = self.max_top();
+            self.gravity_pose = false;
+        }
+    }
+
+    pub fn render(&mut self, now: u64, cursor: Option<(f64, f64)>) -> Option<(Image, i64, i64)> {
+        // While on the run the pet tucks below the screen bottom, leaving only a
+        // sliver (its hat/head) visible. It shows a single `search` frame.
+        let (state, frame, render_top) = if self.on_the_run {
+            (
+                State::Searching,
+                0usize,
+                self.floor - RUN_PEEK * self.scale * self.dpi_scale,
+            )
+        } else {
+            (self.anim_state, self.frame_index(now), self.top)
+        };
+        let tracking = tracks_cursor(state);
+        let state_blink = blinks(state, frame);
+
+        // Gaze: only while the state tracks the cursor (mirrors `updateGaze`).
+        if tracking {
+            if let Some((cx, cy)) = cursor {
+                let center = (self.left + self.display() / 2.0, self.top + self.display() / 2.0);
+                let (dx, dy) = (cx - center.0, cy - center.1);
+                let dist = (dx * dx + dy * dy).sqrt();
+                self.gaze = if dist < 1.0 {
+                    (0.0, 0.0)
+                } else {
+                    ((dx / dist).round(), (dy / dist).round())
+                };
+            }
+        } else {
+            self.gaze = (0.0, 0.0);
+        }
+
+        // Facing: snap the whole body toward the cursor while idle and not
+        // being dragged (mirrors `FacingController.update`). Other states keep
+        // their current facing. `snapToCursor` only flips on a strict side.
+        if state == State::Idle && !self.dragging {
+            if let Some((cx, _)) = cursor {
+                let center = self.left + self.display() / 2.0;
+                if cx < center {
+                    self.set_facing(Facing::Left, now);
+                } else if cx > center {
+                    self.set_facing(Facing::Right, now);
+                }
+            }
+        }
+
+        // Random blink controller (mirrors the plugin's `BlinkController`).
+        if tracking || state_blink {
+            if now >= self.next_blink {
+                self.blinking = true;
+                self.blink_end = now + BLINK_DURATION;
+                self.next_blink = now
+                    + BLINK_MIN_DELAY
+                    + (self.rng() * (BLINK_MAX_DELAY - BLINK_MIN_DELAY) as f64) as u64;
+            }
+            if self.blinking && now >= self.blink_end {
+                self.blinking = false;
+            }
+        } else {
+            self.blinking = false;
+        }
+
+        let (fw, fh) = frame_size(state);
+        let variant = if self.color == "insiders" { "insiders" } else { "stable" };
+        // Sheet suffix: tracking states use the blank-eye variant so the overlay
+        // pupils can move (mirrors `buildSpriteSource`). Sing/dizzy have their own
+        // dedicated frame sizes and never track.
+        let suffix = match state {
+            State::Sing => "124",
+            State::Dizzy => "128",
+            _ if tracking => "tracking-96",
+            _ => "96",
+        };
+        let sheet = asset(&format!("{}-{}.spritesheet.png", sprite_name(state, variant), suffix))
+            .or_else(|| {
+                let name = sprite_name(state, variant);
+                asset(&format!("{}-{}.png", name, suffix))
+            })?;
+
+        let skip_body = self.halloween || now < self.wizard_invisible_until;
+        let acc_def = self.accessory.as_deref().and_then(accessory_by_id);
+        let acc_atlas = acc_def.and_then(|a| asset(&format!("{}.png", a.atlas)));
+        let acc = match (&acc_def, &acc_atlas) {
+            (Some(a), Some(img)) => Some((img as &Image, *a)),
+            _ => None,
+        };
+
+        let mut frame_buf = Image { width: fw, height: fh, rgba: vec![0; (fw * fh * 4) as usize] };
+        composite_frame(&mut frame_buf, &sheet, acc, frame, state, self.facing == Facing::Left, &self.color, skip_body);
+
+        // Eyes layer: mirrors the plugin's `.chat-pet-eyes` overlay. Visible only
+        // while the state tracks the cursor or is a blink state; gaze shifts the
+        // pupil, a random blink squashes it.
+        let eye = if self.halloween {
+            WIZARD_EYE_COLOR
+        } else {
+            eye_color(&self.color)
+        };
+        let mut display_img = scale_nearest(&frame_buf, (fw as f64 * 0.5 * self.scale * self.dpi_scale).round() as u32, (fh as f64 * 0.5 * self.scale * self.dpi_scale).round() as u32);
+        if tracking || state_blink {
+            let gaze = if tracking { self.gaze } else { (0.0, 0.0) };
+            draw_eyes(&mut display_img, self.display(), eye, gaze, self.facing == Facing::Left, self.blinking, state);
+        }
+
+        // April Fools' gravity pose: rotate the whole pet -90°.
+        if self.gravity_pose {
+            display_img = rotate_ccw90(&display_img);
+        }
+
+        // Throw rotation (negated so a positive accumulated angle rotates
+        // clockwise, matching the plugin's CSS `rotate()`).
+        if self.throw.is_some() {
+            let angle = self.throw_rotation(now);
+            if angle != 0.0 {
+                display_img = rotate(&display_img, -angle);
+            }
+        }
+
+        // Pong ball rotation.
+        let pong_rotation = self.pong.as_ref().map(|p| p.rotation).unwrap_or(0.0);
+        if pong_rotation != 0.0 {
+            display_img = rotate(&display_img, -pong_rotation);
+        }
+
+        // Position: center the composite over the display box.
+        let w = display_img.width as i64;
+        let h = display_img.height as i64;
+        let cx = self.left + self.display() / 2.0;
+        let bottom = render_top + self.display();
+        let x = (cx - w as f64 / 2.0).round() as i64;
+        let y = (bottom - h as f64).round() as i64;
+        // The display box's top-right corner (stable, independent of the throw
+        // rotation) is where the combo-counter badge hangs.
+        let box_right = (self.left + self.display()).round() as i64;
+        let box_top = render_top.round() as i64;
+
+        // Composite the pet with any extra layers (speech bubble, confetti) into
+        // one output image spanning the union of their bounding boxes.
+        self.compose_with_extras(display_img, x, y, box_right, box_top, now)
+    }
+
+    /// Draws the pet image plus the speech bubble, confetti particles and combo
+    /// badge (when present) into a single image, returning it and its top-left
+    /// screen offset.
+    #[allow(clippy::too_many_arguments)]
+    fn compose_with_extras(
+        &self,
+        pet_img: Image,
+        pet_x: i64,
+        pet_y: i64,
+        box_right: i64,
+        box_top: i64,
+        now: u64,
+    ) -> Option<(Image, i64, i64)> {
+        let pet_w = pet_img.width as i64;
+        let pet_h = pet_img.height as i64;
+        let mut min_x = pet_x;
+        let mut min_y = pet_y;
+        let mut max_x = pet_x + pet_w;
+        let mut max_y = pet_y + pet_h;
+
+        // Speech bubble above the pet while "thinking" (rendering).
+        let bubble = if self.anim_state == State::Rendering && !self.dragging {
+            self.speech_bubble(now, pet_x, pet_y)
+        } else {
+            None
+        };
+        if let Some((bimg, bx, by)) = &bubble {
+            min_x = min_x.min(*bx);
+            min_y = min_y.min(*by);
+            max_x = max_x.max(bx + bimg.width as i64);
+            max_y = max_y.max(by + bimg.height as i64);
+        }
+
+        // Confetti particles (screen coordinates).
+        for p in &self.confetti {
+            let px = p.x.floor() as i64;
+            let py = p.y.floor() as i64;
+            min_x = min_x.min(px);
+            min_y = min_y.min(py);
+            max_x = max_x.max(px + p.w as i64);
+            max_y = max_y.max(py + p.h as i64);
+        }
+
+        // Combo counter / pong score badge, mimicking the plugin's pill at the
+        // pet's top-right corner.
+        let badge_scale = self.scale * self.dpi_scale;
+        let badge_text = if self.pong.is_some() && self.pong_score > 0 {
+            Some(self.pong_score.to_string())
+        } else if self.throw.is_some() && self.bounce_count > 0 {
+            Some(self.bounce_count.to_string())
+        } else if self.bounce_result_until != 0
+            && now < self.bounce_result_until
+            && self.bounce_result_count > 0
+        {
+            Some(self.bounce_result_count.to_string())
+        } else {
+            None
+        };
+        let mut badge: Option<(String, i64, i64, i64, i64, i64, i64)> = None;
+        if let Some(text) = &badge_text {
+            let digit_px = (3.0 * badge_scale).round().max(1.0) as i64;
+            let pad = (7.0 * badge_scale).round().max(1.0) as i64;
+            let pill_h = (20.0 * badge_scale).round().max(8.0) as i64;
+            let pill_w = text.len() as i64 * 4 * digit_px + 2 * pad;
+            // Hang the badge at the display box's top-right corner (stable even
+            // while the body sprite rotates mid-air).
+            let bx = box_right - pill_w / 2;
+            let by = box_top - pill_h / 2;
+            min_x = min_x.min(bx);
+            min_y = min_y.min(by);
+            max_x = max_x.max(bx + pill_w);
+            max_y = max_y.max(by + pill_h);
+            badge = Some((text.clone(), bx, by, pill_w, pill_h, digit_px, pad));
+        }
+
+        if bubble.is_none() && self.confetti.is_empty() && badge.is_none() {
+            return Some((pet_img, pet_x, pet_y));
+        }
+
+        let out_w = (max_x - min_x) as u32;
+        let out_h = (max_y - min_y) as u32;
+        let mut out = Image {
+            width: out_w,
+            height: out_h,
+            rgba: vec![0; (out_w * out_h * 4) as usize],
+        };
+        blit(
+            &mut out,
+            &pet_img,
+            pet_x - min_x,
+            pet_y - min_y,
+            0,
+            0,
+            pet_img.width,
+            pet_img.height,
+        );
+        if let Some((bimg, bx, by)) = &bubble {
+            blit(&mut out, bimg, bx - min_x, by - min_y, 0, 0, bimg.width, bimg.height);
+        }
+        for p in &self.confetti {
+            let t = (now.saturating_sub(p.born)) as f64 / p.life.max(1) as f64;
+            let alpha = if t < 0.2 {
+                t / 0.2
+            } else if t > 0.7 {
+                ((1.0 - t) / 0.3).max(0.0)
+            } else {
+                1.0
+            };
+            fill_rect(
+                &mut out,
+                p.x.floor() as i64 - min_x,
+                p.y.floor() as i64 - min_y,
+                p.w as i64,
+                p.h as i64,
+                p.color,
+                (alpha * 255.0).round() as u8,
+            );
+        }
+        if let Some((text, bx, by, pill_w, pill_h, digit_px, pad)) = &badge {
+            // Rounded pill background, then centered white digits.
+            fill_rounded_rect(
+                &mut out,
+                bx - min_x,
+                by - min_y,
+                *pill_w,
+                *pill_h,
+                *pill_h / 2,
+                BADGE_BACKGROUND,
+            );
+            let dx = bx + *pad;
+            let dy = by + (*pill_h - 5 * *digit_px) / 2;
+            draw_digits(
+                &mut out,
+                dx - min_x,
+                dy - min_y,
+                text,
+                BADGE_FOREGROUND,
+                *digit_px as u32,
+            );
+        }
+        Some((out, min_x, min_y))
+    }
+
+    /// The animated speech bubble (`buddy-speech`) placed above the pet.
+    fn speech_bubble(&self, now: u64, pet_x: i64, pet_y: i64) -> Option<(Image, i64, i64)> {
+        let variant = if self.color == "insiders" { "insiders" } else { "stable" };
+        let sheet = asset(&format!("buddy-speech-{}-96.spritesheet.png", variant))
+            .or_else(|| asset(&format!("buddy-speech-{}-96.png", variant)))?;
+        let idx = frame_index_for(SPEECH_FRAME_DURATIONS, now.saturating_sub(self.anim_start));
+        let src_x = (idx as u32 * 96).min(sheet.width.saturating_sub(96));
+
+        let bubble_px = (72.0 * self.scale * self.dpi_scale).round() as u32;
+        let mut img = Image {
+            width: bubble_px,
+            height: bubble_px,
+            rgba: vec![0; (bubble_px * bubble_px * 4) as usize],
+        };
+        // Copy the 96x96 source cell into the bubble image (bilinear-free
+        // nearest up/downscale).
+        for y in 0..bubble_px {
+            let sy = (y as u32 * 96 / bubble_px) as u32;
+            for x in 0..bubble_px {
+                let sx = (x as u32 * 96 / bubble_px) as u32;
+                let si = (((sy * sheet.width + src_x + sx) * 4) as usize);
+                let di = ((y * bubble_px + x) * 4) as usize;
+                img.rgba[di..di + 4].copy_from_slice(&sheet.rgba[si..si + 4]);
+            }
+        }
+
+        // Place the bubble above the pet, aligned with its head.
+        let scale = self.scale * self.dpi_scale;
+        let bx = pet_x + (24.0 * scale).round() as i64;
+        let by = pet_y - img.height as i64 + (6.0 * scale).round() as i64;
+        Some((img, bx, by))
+    }
+
+    fn frame_index(&self, now: u64) -> usize {
+        let durs = frame_durations(self.anim_state);
+        if durs.is_empty() {
+            return 0;
+        }
+        let elapsed = now.saturating_sub(self.anim_start);
+        let total: u64 = durs.iter().sum();
+        let one_shot = matches!(
+            self.anim_state,
+            State::Waking
+                | State::ButtonPress
+                | State::Cool
+                | State::Splat
+                | State::Searching
+        );
+        if one_shot && elapsed >= total {
+            return durs.len() - 1;
+        }
+        let mut e = elapsed % total;
+        for (i, d) in durs.iter().enumerate() {
+            if e < *d {
+                return i;
+            }
+            e -= d;
+        }
+        durs.len() - 1
+    }
+
+    fn throw_rotation(&self, now: u64) -> f64 {
+        let _ = now;
+        match &self.throw {
+            // Helicopter lift: the body stays upright the whole flight.
+            Some(t) if t.propeller_lift => 0.0,
+            // Bamboo copter: head-down while rising, upright while gliding down.
+            Some(t) if t.spinner || t.propeller => {
+                if t.vy < 0.0 {
+                    SPINNER_ASCENT_ROTATION
+                } else {
+                    0.0
+                }
+            }
+            Some(t) => t.rotation,
+            None => 0.0,
+        }
+    }
+
+    fn set_state(&mut self, state: State, now: u64) {
+        if self.anim_state != state {
+            self.anim_state = state;
+            self.anim_start = now;
+        }
+    }
+
+    /// Sets the facing and records the direction change (mirrors the plugin's
+    /// `updateGaze` -> `recordDirectionChange`): rapid changes trigger either
+    /// the propeller-hat lift or dizziness.
+    fn set_facing(&mut self, facing: Facing, now: u64) {
+        if self.facing == facing {
+            return;
+        }
+        self.facing = facing;
+        self.record_direction_change(now);
+    }
+
+    /// Directly flips the sprite, used by the airborne "spins" (bamboo copter
+    /// and helicopter lift). These are visual and must not count toward dizzy.
+    fn flip_facing(&mut self) {
+        self.facing = if self.facing == Facing::Left {
+            Facing::Right
+        } else {
+            Facing::Left
+        };
+    }
+
+    fn record_direction_change(&mut self, now: u64) {
+        // Propeller hat: rapid mouse-driven facing switches wind the propeller
+        // up and lift the pet instead of making it dizzy (disabled while
+        // airborne, dragging, on the run, or on April Fools').
+        if self.accessory.as_deref() == Some("propellerHat")
+            && self.throw.is_none()
+            && self.pong.is_none()
+            && !self.dragging
+            && !self.on_the_run
+            && !self.april_fools
+        {
+            if self.propeller_wiggle_last != 0
+                && now.saturating_sub(self.propeller_wiggle_last) > PROPELLER_WIGGLE_MAX_INTERVAL
+            {
+                self.propeller_wiggle_count = 0;
+            }
+            self.propeller_wiggle_last = now;
+            self.propeller_wiggle_count += 1;
+            if self.propeller_wiggle_count >= PROPELLER_WIGGLE_COUNT {
+                self.propeller_wiggle_count = 0;
+                self.propeller_wiggle_last = 0;
+                self.begin_propeller_lift(now);
+            }
+            return;
+        }
+        // DirectionChangeController: 8 direction changes within the window
+        // makes the pet dizzy.
+        match self.last_dir {
+            None => {
+                self.last_dir = Some(self.facing);
+                self.last_dir_change = now;
+            }
+            Some(prev) => {
+                if prev == self.facing {
+                    return;
+                }
+                if now.saturating_sub(self.last_dir_change) > DIZZY_DIRECTION_CHANGE_MAX_INTERVAL {
+                    self.dir_change_count = 0;
+                }
+                self.last_dir = Some(self.facing);
+                self.last_dir_change = now;
+                self.dir_change_count += 1;
+                if self.dir_change_count >= DIZZY_DIRECTION_CHANGE_COUNT {
+                    self.last_dir = None;
+                    self.dir_change_count = 0;
+                    self.last_dir_change = 0;
+                    if self.throw.is_none() && self.pong.is_none() && !self.dragging {
+                        self.wake(now);
+                        self.transient = Some((State::Dizzy, now + DIZZY_DURATION));
+                        self.set_state(State::Dizzy, now);
+                    }
+                }
+            }
+        }
+    }
+
+    fn begin_propeller_lift(&mut self, now: u64) {
+        self.wake(now);
+        self.begin_throw(0.0, PROPELLER_LIFT_UPWARD_VELOCITY, now, true);
+    }
+
+    fn schedule_wizard_invisibility(&mut self, now: u64) {
+        if self.accessory.as_deref() != Some("wizardHat") {
+            return;
+        }
+        if self.halloween {
+            return;
+        }
+        // No hat special features on April Fools', except inside a pong game.
+        if self.april_fools && self.pong.is_none() {
+            return;
+        }
+        self.wizard_next_episode = now
+            + WIZARD_INVISIBLE_MIN_INTERVAL
+            + (self.rng() * (WIZARD_INVISIBLE_MAX_INTERVAL - WIZARD_INVISIBLE_MIN_INTERVAL) as f64)
+                as u64;
+    }
+
+    fn step_wizard(&mut self, now: u64) {
+        if self.accessory.as_deref() != Some("wizardHat") {
+            self.wizard_invisible_until = 0;
+            self.wizard_next_episode = 0;
+            return;
+        }
+        if self.wizard_invisible_until != 0 {
+            // Episode ends: go visible again and schedule the next one.
+            if now >= self.wizard_invisible_until {
+                self.wizard_invisible_until = 0;
+                self.schedule_wizard_invisibility(now);
+            }
+        } else if self.wizard_next_episode == 0 {
+            self.schedule_wizard_invisibility(now);
+        } else if now >= self.wizard_next_episode {
+            self.wizard_next_episode = 0;
+            // Don't vanish mid-nap or while on the run; try again later.
+            if self.base_state == State::Sleep || self.on_the_run {
+                self.schedule_wizard_invisibility(now);
+            } else {
+                self.wizard_invisible_until = now + WIZARD_INVISIBLE_DURATION;
+            }
+        }
+    }
+
+    pub fn wake(&mut self, now: u64) {
+        if self.on_the_run {
+            return;
+        }
+        self.idle_since = now;
+        if self.base_state == State::Sleep {
+            self.base_state = State::Idle;
+            self.transient = Some((State::Waking, now + WAKE_STATE_DURATION));
+        }
+        // Restart the periodic "thinking" schedule fresh on every wake.
+        self.next_think = 0;
+    }
+
+    pub fn click(&mut self, now: u64, cursor: (f64, f64)) {
+        if self.on_the_run {
+            // Clicking the peeking pet brings it back (mirrors the plugin).
+            self.on_the_run = false;
+            self.wake(now);
+            self.place_rest();
+            self.search_target_run = false;
+            self.search_until = now + SEARCH_DURATION;
+            self.set_state(State::Searching, now);
+            return;
+        }
+        self.wake(now);
+        // Snap facing toward the click before playing the reaction (mirrors
+        // `showTransientState` -> `snapFacingToCursor`).
+        let center = self.left + self.display() / 2.0;
+        if cursor.0 < center {
+            self.facing = Facing::Left;
+        } else if cursor.0 > center {
+            self.facing = Facing::Right;
+        }
+        if let Some(p) = &self.pong {
+            let _ = p;
+            return; // pong is mouse-throw only; clicks ignored while active
+        }
+        if self.throw.is_some() {
+            return;
+        }
+        let party = self.accessory.as_deref() == Some("partyHat")
+            || self.accessory.as_deref() == Some("pinkPartyHat");
+        let r = self.rng();
+        let spin = if party { PARTY_HAT_SPIN_CHANCE } else { ICON_TRANSFORMATION_CHANCE };
+        let yapping = if party { PARTY_HAT_YAPPING_CHANCE } else { YAPPING_CHANCE };
+        let sing = if party { PARTY_HAT_SING_CHANCE } else { 0.0 };
+        let state = if r < spin {
+            State::Complete
+        } else if r < spin + yapping {
+            State::Yapping
+        } else if r < spin + yapping + sing {
+            State::Sing
+        } else {
+            // Mirrors `getChatPetClickInteraction`: pick from the remaining
+            // interactions, excluding the previous one (no immediate repeat)
+            // and excluding `sing` while wearing a party hat.
+            let mut choices = vec![
+                State::ButtonPress,
+                State::Love,
+                State::Cool,
+                State::Sing,
+                State::Speechless,
+                State::Worry,
+            ];
+            if let Some(prev) = self.last_click {
+                choices.retain(|&c| c != prev);
+            }
+            if party {
+                choices.retain(|&c| c != State::Sing);
+            }
+            let rest = (r - spin - yapping - sing) / (1.0 - spin - yapping - sing);
+            choices[((rest * choices.len() as f64) as usize).min(choices.len() - 1)]
+        };
+        self.last_click = Some(state);
+        let dur = transient_duration(state);
+        self.transient = Some((state, now + dur));
+        self.set_state(state, now);
+    }
+
+    pub fn begin_drag(&mut self, now: u64) {
+        if self.on_the_run {
+            return;
+        }
+        self.wake(now);
+        self.throw = None;
+        self.dragging = true;
+        self.set_state(State::Idle, now);
+    }
+
+    pub fn drag_to(&mut self, cursor: (f64, f64)) {
+        if !self.dragging {
+            return;
+        }
+        self.left = cursor.0 - self.display() / 2.0;
+        self.top = cursor.1 - self.display() / 2.0;
+        self.clamp_position();
+    }
+
+    pub fn end_drag(&mut self, now: u64, vx: f64, vy: f64) {
+        self.dragging = false;
+        let speed = (vx * vx + vy * vy).sqrt();
+        if speed >= THROW_MIN_VELOCITY {
+            let s = THROW_MAX_VELOCITY / speed;
+            let v = if s < 1.0 { s } else { 1.0 };
+            self.begin_throw(vx * v, vy * v, now, false);
+        } else {
+            if self.april_fools {
+                // April Fools' replaces throws with pong; a slow release just
+                // re-settles against the right wall.
+                self.finish_throw(now);
+            } else {
+                // Slow release: a gentle upward toss instead of a straight drop.
+                // Keep a little horizontal drift, and always give an upward pop.
+                let vx = vx.clamp(-SLOW_RELEASE_TOSS_VELOCITY, SLOW_RELEASE_TOSS_VELOCITY);
+                let vy = vy.min(-SLOW_RELEASE_TOSS_VELOCITY);
+                self.begin_throw(vx, vy, now, false);
+            }
+        }
+    }
+
+    fn clamp_position(&mut self) {
+        if self.april_fools {
+            // Free axis is vertical; horizontal is fixed to the right wall.
+            self.left = self.screen_w - self.display();
+            self.top = self.top.clamp(0.0, self.max_top());
+        } else {
+            self.left = self.left.clamp(0.0, self.max_left());
+            self.top = self.top.clamp(0.0, self.max_top());
+        }
+    }
+
+    fn begin_throw(&mut self, vx: f64, vy: f64, now: u64, propeller_lift: bool) {
+        // A new flight always cancels any pending transient (waking, splat, …)
+        // so its expiry can't yank the rendered state back to the ground mid-air.
+        self.transient = None;
+        // April Fools': a mouse throw starts pong.
+        if self.april_fools {
+            self.start_pong(now, vx, vy);
+            return;
+        }
+        let spinner = !propeller_lift
+            && self.accessory.as_deref() == Some("spinnerHat")
+            && vy < 0.0;
+        let propeller = !propeller_lift
+            && self.accessory.as_deref() == Some("propellerHat")
+            && vy < 0.0;
+        self.throw = Some(ThrowMotion {
+            left: self.left,
+            top: self.top,
+            vx,
+            vy,
+            start: now,
+            last_frame: now,
+            rotation: 0.0,
+            spin_elapsed: 0.0,
+            flip_accumulator: 0.0,
+            spinner,
+            propeller,
+            propeller_lift,
+            grace_until: now + MOUSE_BOUNCE_RELEASE_GRACE,
+            cursor_contacting: false,
+            wall_impact_until: 0,
+        });
+        self.bounce_count = 0;
+        self.bounce_result_count = 0;
+        self.bounce_result_until = 0;
+        self.set_state(State::Falling, now);
+    }
+
+    fn finish_throw(&mut self, now: u64) {
+        self.throw = None;
+        // settle on the floor
+        self.place_rest();
+        self.set_state(State::Splat, now);
+        self.transient = Some((State::Splat, now + SPLAT_DURATION));
+    }
+
+    pub fn tick(&mut self, now: u64, cursor: Option<(f64, f64)>, cursor_velocity: (f64, f64)) {
+        // Remember the previous cursor position for swept collision detection.
+        let prev_cursor = self.prev_cursor;
+        self.prev_cursor = cursor;
+
+        // Transient expiry
+        if let Some((s, end)) = self.transient {
+            if now >= end {
+                self.transient = None;
+                self.set_state(self.base_state, now);
+                match s {
+                    State::Waking => {}
+                    // A finished "thinking" episode schedules the next one; the
+                    // idle clock keeps running so the pet can still fall asleep.
+                    State::Rendering => {
+                        self.schedule_think(now);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Idle -> sleep
+        if self.transient.is_none()
+            && !self.dragging
+            && self.throw.is_none()
+            && self.pong.is_none()
+            && !self.on_the_run
+            && self.search_until == 0
+        {
+            if now.saturating_sub(self.idle_since) >= IDLE_SLEEP_DELAY {
+                if self.base_state != State::Sleep {
+                    self.base_state = State::Sleep;
+                    self.set_state(State::Sleep, now);
+                }
+            }
+        }
+        // Periodic "thinking" (rendering) episodes with the speech bubble.
+        self.step_think(now);
+
+        // Go on the Run: apply the pending hide/show once the search animation
+        // finishes.
+        if self.search_until != 0 && now >= self.search_until {
+            self.search_until = 0;
+            self.on_the_run = self.search_target_run;
+            if self.on_the_run {
+                self.set_state(State::Searching, now);
+            } else {
+                self.wake(now);
+                self.set_state(self.base_state, now);
+            }
+        }
+
+        // Wizard invisibility: periodic episodes while wearing the wizard hat
+        // (mirrors `scheduleWizardInvisibility` / `setWizardInvisible`).
+        self.step_wizard(now);
+
+        // Confetti particles.
+        self.step_confetti(now);
+
+        // Throw physics
+        if let Some(t) = self.throw.take() {
+            self.step_throw(t, now, cursor, cursor_velocity, prev_cursor);
+        }
+
+        // Pong
+        if let Some(mut p) = self.pong.take() {
+            if self.step_pong(&mut p, now, cursor) {
+                self.pong = Some(p);
+            }
+        }
+
+        // Keep rendered state in sync when idle
+        if self.transient.is_none()
+            && self.throw.is_none()
+            && !self.dragging
+            && self.pong.is_none()
+            && self.search_until == 0
+            && !self.on_the_run
+        {
+            self.set_state(self.base_state, now);
+        }
+    }
+
+    fn schedule_think(&mut self, now: u64) {
+        self.next_think = now
+            + THINK_MIN_INTERVAL
+            + (self.rng() * (THINK_MAX_INTERVAL - THINK_MIN_INTERVAL) as f64) as u64;
+    }
+
+    fn step_think(&mut self, now: u64) {
+        if self.on_the_run
+            || self.dragging
+            || self.throw.is_some()
+            || self.pong.is_some()
+            || self.search_until != 0
+        {
+            return;
+        }
+        if self.base_state != State::Idle || self.transient.is_some() {
+            return;
+        }
+        if self.next_think == 0 {
+            self.schedule_think(now);
+            return;
+        }
+        if now >= self.next_think {
+            self.next_think = 0;
+            self.transient = Some((State::Rendering, now + RENDER_DURATION));
+            self.set_state(State::Rendering, now);
+        }
+    }
+
+    fn step_confetti(&mut self, now: u64) {
+        if self.confetti.is_empty() {
+            return;
+        }
+        let last = if self.confetti_last == 0 { now.saturating_sub(16) } else { self.confetti_last };
+        let dt = (now.saturating_sub(last).min(32)) as f64 / 1000.0;
+        self.confetti_last = now;
+        for p in self.confetti.iter_mut() {
+            p.vy += CONFETTI_GRAVITY * dt;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+        }
+        self.confetti.retain(|p| now.saturating_sub(p.born) < p.life);
+    }
+
+    fn spawn_confetti(&mut self, now: u64, cx: f64, cy: f64) {
+        self.confetti.clear();
+        for i in 0..CONFETTI_COUNT {
+            let angle = (-160.0 + self.rng() * 140.0).to_radians();
+            let speed = 200.0 + self.rng() * 220.0;
+            self.confetti.push(ConfettiParticle {
+                x: cx,
+                y: cy,
+                vx: angle.cos() * speed,
+                vy: angle.sin() * speed,
+                w: (4.0 + (i % 3) as f64 * 1.5).round() as u32,
+                h: (3 + ((i + 1) % 3)) as u32,
+                color: CONFETTI_COLORS[i % CONFETTI_COLORS.len()],
+                born: now,
+                life: CONFETTI_LIFE_MS,
+            });
+        }
+    }
+
+    fn step_throw(
+        &mut self,
+        mut t: ThrowMotion,
+        now: u64,
+        cursor: Option<(f64, f64)>,
+        cursor_velocity: (f64, f64),
+        prev_cursor: Option<(f64, f64)>,
+    ) {
+        // A wall impact freezes the flight for a beat, then resumes falling.
+        if t.wall_impact_until != 0 {
+            if now < t.wall_impact_until {
+                self.throw = Some(t);
+                return;
+            }
+            t.wall_impact_until = 0;
+            self.set_state(State::Falling, now);
+        }
+
+        let elapsed_ms = now.saturating_sub(t.last_frame).min(THROW_MAX_FRAME_DURATION) as f64;
+        t.last_frame = now;
+        let elapsed = elapsed_ms / 1000.0;
+
+        let gravity = if t.propeller_lift {
+            if t.vy < 0.0 {
+                PROPELLER_ASCENT_DECELERATION
+            } else {
+                PROPELLER_DESCENT_GRAVITY
+            }
+        } else if t.spinner {
+            if t.vy < 0.0 {
+                SPINNER_ASCENT_GRAVITY
+            } else {
+                SPINNER_DESCENT_GRAVITY
+            }
+        } else if t.propeller {
+            if t.vy < 0.0 {
+                PROPELLER_THROW_ASCENT_GRAVITY
+            } else {
+                PROPELLER_THROW_DESCENT_GRAVITY
+            }
+        } else {
+            THROW_GRAVITY
+        };
+
+        let prev_left = t.left;
+        t.left += t.vx * elapsed;
+        t.top += t.vy * elapsed + 0.5 * gravity * elapsed * elapsed;
+        t.vy += gravity * elapsed;
+        let horizontal = t.left - prev_left;
+
+        // Wizard hat: after a short grace, every airborne moment may teleport
+        // the pet to the upper half, preserving its velocity.
+        if self.accessory.as_deref() == Some("wizardHat")
+            && now.saturating_sub(t.start) >= WIZARD_TELEPORT_GRACE
+        {
+            let chance = 1.0 - (-WIZARD_TELEPORT_CHANCE_PER_SECOND * elapsed).exp();
+            if self.rng() < chance {
+                let half_top = (self.max_top() - self.display()).max(0.0) / 2.0;
+                t.top = self.rng() * half_top;
+                t.left = self.rng() * self.max_left();
+            }
+        }
+
+        // Wall bounce (brief impact pose, then a rebound).
+        let max_left = self.max_left();
+        if t.left < 0.0 {
+            t.left = 0.0;
+            t.vx = -t.vx * THROW_WALL_RESTITUTION;
+            t.wall_impact_until = now + WALL_IMPACT_DURATION;
+            self.set_state(State::WallImpact, now);
+            self.facing = Facing::Left;
+        } else if t.left > max_left {
+            t.left = max_left;
+            t.vx = -t.vx * THROW_WALL_RESTITUTION;
+            t.wall_impact_until = now + WALL_IMPACT_DURATION;
+            self.set_state(State::WallImpact, now);
+            self.facing = Facing::Right;
+        }
+        // Ceiling
+        if t.top < 0.0 {
+            t.top = 0.0;
+            t.vy = t.vy.abs() * THROW_CEILING_RESTITUTION;
+        }
+
+        // Mouse bounce: any airborne mode can be caught with the cursor while
+        // descending (mirrors the plugin's `tryMouseBounce` -> `throwBounceHandler`,
+        // which only requires a descending pet, regardless of hat mode).
+        if now >= t.grace_until {
+            if let Some((cx, cy)) = cursor {
+                let display = self.display();
+                // Swept collision: also count a catch when the cursor jumped over
+                // the pet's box between the previous and current frame.
+                let contacting = (cx >= t.left && cx <= t.left + display && cy >= t.top && cy <= t.top + display)
+                    || prev_cursor
+                        .map(|(px, py)| segment_intersects_rect(px, py, cx, cy, t.left, t.top, display, display))
+                        .unwrap_or(false);
+                if !t.cursor_contacting && contacting && t.vy > 0.0 {
+                    // Mirrors the plugin's `tryMouseBounce`: bounce whenever the
+                    // cursor was not touching before but is now, while descending.
+                    let pointer_vx = cursor_velocity.0;
+                    let pointer_vy = cursor_velocity.1;
+                    let pet_center = t.left + self.display() / 2.0;
+                    let offset = if self.display() > 0.0 {
+                        ((pet_center - cx) / (self.display() / 2.0)).clamp(-1.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let hv = (t.vx * MOUSE_BOUNCE_H_RETENTION
+                        + pointer_vx * MOUSE_BOUNCE_H_TRANSFER
+                        + offset * MOUSE_BOUNCE_EDGE_KICK)
+                        .clamp(-MOUSE_BOUNCE_MAX_H, MOUSE_BOUNCE_MAX_H);
+                    let uv = (t.vy.max(0.0) * MOUSE_BOUNCE_V_RESTITUTION
+                        + (-pointer_vy).max(0.0) * MOUSE_BOUNCE_UP_TRANSFER)
+                        .max(MOUSE_BOUNCE_MIN_UP);
+                    t.vx = hv;
+                    t.vy = -uv.min(MOUSE_BOUNCE_MAX_UP);
+                    self.bounce_count += 1;
+                    // Restart the 4s flight watchdog on each bounce (mirrors the
+                    // plugin's `beginBounceImpact` resetting `startTime`).
+                    t.start = now;
+                }
+                t.cursor_contacting = contacting;
+            }
+        }
+
+        // Body orientation while airborne.
+        if t.propeller_lift {
+            // Helicopter lift: the body stays upright while the propeller
+            // "spins" it via rapid left/right swaps, slowing down over time.
+            t.spin_elapsed += elapsed_ms;
+            let progress = (t.spin_elapsed / PROPELLER_SPIN_DECAY_TIME).min(1.0);
+            let flip_interval = PROPELLER_FLIP_INTERVAL_START
+                + (PROPELLER_FLIP_INTERVAL_END - PROPELLER_FLIP_INTERVAL_START) * progress;
+            t.flip_accumulator += elapsed_ms;
+            while t.flip_accumulator >= flip_interval {
+                t.flip_accumulator -= flip_interval;
+                self.flip_facing();
+            }
+        } else if t.spinner || t.propeller {
+            // Bamboo copter: head-down while rising; on the way down the body
+            // "spins" by rapidly swapping the left/right sprite.
+            if t.vy < 0.0 {
+                t.flip_accumulator = 0.0;
+            } else {
+                let flip_interval = if t.propeller {
+                    PROPELLER_THROW_FLIP_INTERVAL
+                } else {
+                    SPINNER_FLIP_INTERVAL
+                };
+                t.flip_accumulator += elapsed_ms;
+                while t.flip_accumulator >= flip_interval {
+                    t.flip_accumulator -= flip_interval;
+                    self.flip_facing();
+                }
+            }
+        } else {
+            // Normal throw: continuous rotation with self-righting near the end.
+            t.rotation = throw_rotation_step(t.rotation, horizontal, t.vy, elapsed);
+        }
+
+        self.left = t.left;
+        self.top = t.top;
+
+        // Land check (computed before moving `t` back into the throw slot).
+        let floor_land = if self.april_fools {
+            self.screen_w - self.display()
+        } else {
+            self.max_top()
+        };
+        let landed = now.saturating_sub(t.start) >= THROW_MAX_DURATION
+            || (self.april_fools && t.left > floor_land && t.vx >= 0.0)
+            || (!self.april_fools && t.top > floor_land && t.vy >= 0.0);
+
+        if landed {
+            // Confetti bursts at landing once the streak reaches 20 (mirrors the
+            // plugin's `completeFall` -> `showBounceConfetti`).
+            if self.bounce_count >= CONFETTI_SCORE {
+                let cx = self.left + self.display() / 2.0;
+                let cy = self.top + self.display() / 2.0;
+                self.spawn_confetti(now, cx, cy);
+            }
+            self.finish_throw(now);
+            // Keep the combo count visible briefly after landing, then clear it.
+            if self.bounce_count > 0 {
+                self.bounce_result_count = self.bounce_count;
+                self.bounce_result_until = now + BOUNCE_RESULT_DURATION;
+            }
+            self.bounce_count = 0;
+        } else {
+            self.throw = Some(t);
+        }
+    }
+
+    fn start_pong(&mut self, now: u64, vx: f64, vy: f64) {
+        // The ball carries the throw's initial velocity; if it's negligible,
+        // launch left with a slight random angle (matches the plugin).
+        let speed = (vx * vx + vy * vy).sqrt();
+        let (bvx, bvy) = if speed > 40.0 {
+            (vx, vy)
+        } else {
+            let angle = (self.rng() * 0.6 - 0.3) * std::f64::consts::PI;
+            (-angle.cos() * PONG_BALL_SPEED, angle.sin() * PONG_BALL_SPEED)
+        };
+        self.pong = Some(Pong {
+            ball_x: self.left,
+            ball_y: self.top,
+            vx: bvx,
+            vy: bvy,
+            paddle_y: 0.0,
+            start: now,
+            last_frame: now,
+            rotation: 0.0,
+        });
+        self.pong_score = 0;
+        // The ball flies right-side-up (only the right-wall rest uses the
+        // rotated gravity pose).
+        self.gravity_pose = false;
+        self.set_state(State::Falling, now);
+    }
+
+    /// Advances one pong step; returns `false` when the game has ended.
+    fn step_pong(&mut self, p: &mut Pong, now: u64, cursor: Option<(f64, f64)>) -> bool {
+        let elapsed_ms = now.saturating_sub(p.last_frame).min(THROW_MAX_FRAME_DURATION) as f64;
+        p.last_frame = now;
+        let dt = elapsed_ms / 1000.0;
+        let display = self.display();
+
+        // Wizard hat: while playing, every in-game moment may teleport the ball
+        // to the left half, keeping its velocity.
+        if self.accessory.as_deref() == Some("wizardHat")
+            && now.saturating_sub(p.start) >= WIZARD_TELEPORT_GRACE
+        {
+            let chance = 1.0 - (-WIZARD_TELEPORT_CHANCE_PER_SECOND * dt).exp();
+            if self.rng() < chance {
+                p.ball_y = self.rng() * (self.floor - display).max(0.0);
+                p.ball_x = self.rng() * (self.screen_w / 2.0 - display).max(0.0);
+            }
+        }
+
+        p.ball_x += p.vx * dt;
+        p.ball_y += p.vy * dt;
+
+        // Top and bottom walls.
+        if p.ball_y < 0.0 {
+            p.ball_y = 0.0;
+            p.vy = p.vy.abs();
+        } else if p.ball_y + display > self.floor {
+            p.ball_y = self.floor - display;
+            p.vy = -p.vy.abs();
+        }
+        // Left wall bounces.
+        if p.ball_x < 0.0 {
+            p.ball_x = 0.0;
+            p.vx = p.vx.abs();
+        }
+
+        // Paddle on the right wall: bounce when the ball's right edge reaches it
+        // and its center is within the paddle's span.
+        let paddle_left = self.screen_w - PONG_PADDLE_WIDTH;
+        let paddle_top = p.paddle_y;
+        let paddle_bottom = p.paddle_y + PONG_PADDLE_HEIGHT;
+        if p.vx > 0.0 && p.ball_x + display >= paddle_left {
+            let ball_center_y = p.ball_y + display / 2.0;
+            if ball_center_y >= paddle_top && ball_center_y <= paddle_bottom {
+                let rel = ((ball_center_y - (paddle_top + paddle_bottom) / 2.0)
+                    / (PONG_PADDLE_HEIGHT / 2.0))
+                    .clamp(-1.0, 1.0);
+                let angle = rel * PONG_MAX_ANGLE.to_radians();
+                let sp = (p.vx * p.vx + p.vy * p.vy).sqrt().max(PONG_BALL_SPEED) * 1.02;
+                p.vx = -angle.cos() * sp;
+                p.vy = angle.sin() * sp;
+                p.ball_x = paddle_left - display;
+                self.pong_score += 1;
+            }
+        }
+
+        // Paddle follows the mouse.
+        if let Some((_, cy)) = cursor {
+            p.paddle_y =
+                (cy - PONG_PADDLE_HEIGHT / 2.0).clamp(0.0, self.floor - PONG_PADDLE_HEIGHT);
+        }
+
+        // Game over: the ball slipped past the right wall (missed the paddle).
+        if p.ball_x > self.screen_w {
+            self.pong = None;
+            self.pong_score = 0;
+            self.finish_throw(now);
+            return false;
+        }
+
+        // Continuous ball spin.
+        p.rotation = (p.rotation + elapsed_ms * PONG_SPIN_RATE) % 360.0;
+
+        self.left = p.ball_x;
+        self.top = p.ball_y;
+        self.set_state(State::Falling, now);
+        true
+    }
+
+    pub fn set_scale(&mut self, s: f64) {
+        self.scale = s.max(MIN_SCALE);
+        self.clamp_position();
+    }
+
+    pub fn set_color(&mut self, c: String) {
+        self.color = c;
+    }
+
+    pub fn set_accessory(&mut self, id: Option<String>, now: u64) {
+        self.accessory = id;
+        self.wizard_invisible_until = 0;
+        self.wizard_next_episode = 0;
+        self.schedule_wizard_invisibility(now);
+    }
+
+    pub fn toggle_run(&mut self, now: u64) {
+        if self.on_the_run {
+            // Return: play the search animation, then go idle.
+            self.on_the_run = false;
+            self.search_target_run = false;
+        } else {
+            // Run away: play the search animation, then peek below the edge.
+            self.search_target_run = true;
+        }
+        self.search_until = now + SEARCH_DURATION;
+        self.set_state(State::Searching, now);
+    }
+
+    pub fn show(&mut self, now: u64) {
+        self.on_the_run = false;
+        self.wake(now);
+        // Randomize the resting spot on every show.
+        self.left = self.rng() * self.max_left();
+        self.top = self.max_top();
+        self.place_rest();
+        self.search_target_run = false;
+        self.search_until = now + SEARCH_DURATION;
+        self.set_state(State::Searching, now);
+    }
+
+    /// Serialize the current pet configuration for persistence.
+    pub fn serialize(&self) -> Config {
+        Config {
+            color: self.color.clone(),
+            accessory: self.accessory.clone(),
+            scale: self.scale,
+            position_x: Some(self.left),
+            position_y: Some(self.top),
+        }
+    }
+}
