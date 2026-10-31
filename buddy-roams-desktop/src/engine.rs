@@ -1733,10 +1733,13 @@ impl Pet {
             }
         }
 
-        // Place the bubble above the pet, aligned with its head.
+        // Place the bubble like the plugin's `.chat-pet-speech-bubble`: its top
+        // sits 32px above the pet's top and its left edge is 4px right of the
+        // pet's left edge, so the bubble overlaps the pet's head instead of
+        // floating far above it.
         let scale = self.scale * self.dpi_scale;
-        let bx = pet_x + (24.0 * scale).round() as i64;
-        let by = pet_y - img.height as i64 + (6.0 * scale).round() as i64;
+        let bx = pet_x + (4.0 * scale).round() as i64;
+        let by = pet_y - (32.0 * scale).round() as i64;
         Some((img, bx, by))
     }
 
