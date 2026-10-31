@@ -1489,6 +1489,19 @@ impl Pet {
         let mut frame_buf = Image { width: fw, height: fh, rgba: vec![0; (fw * fh * 4) as usize] };
         composite_frame(&mut frame_buf, &sheet, acc, frame, state, self.facing == Facing::Left, &self.color, skip_body);
 
+        // When invisible (Halloween ghost / wizard invisibility) the body is
+        // skipped, leaving only the hat and the eye pupils opaque — so the pet
+        // would only be grabbable at those exact pixels. Give the whole body
+        // cell a near-invisible alpha (1/255) so any point on the body still
+        // hit-tests and can be dragged.
+        if skip_body {
+            for p in frame_buf.rgba.chunks_exact_mut(4) {
+                if p[3] == 0 {
+                    p[3] = 1;
+                }
+            }
+        }
+
         // Eyes layer: mirrors the plugin's `.chat-pet-eyes` overlay. Visible only
         // while the state tracks the cursor or is a blink state; gaze shifts the
         // pupil, a random blink squashes it.
