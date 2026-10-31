@@ -1287,6 +1287,14 @@ fn random_seed() -> u64 {
         .max(1)
 }
 
+/// Current time in milliseconds since the Unix epoch (matches `main`'s clock).
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl Pet {
     pub fn new(
         floor: f64,
@@ -1358,6 +1366,9 @@ impl Pet {
             p.top = y;
         }
         p.place_rest();
+        // Spawn awake: the idle clock starts now, so the pet won't immediately
+        // fall asleep on the first tick (idle_since would otherwise be 0).
+        p.idle_since = now_ms();
         p
     }
 
@@ -2132,13 +2143,16 @@ impl Pet {
                 }
             }
         }
-        // Idle -> sleep
+        // Idle -> sleep. The pet never sleeps while invisible (Halloween ghost
+        // or a wizard-hat invisibility episode): asleep it hides its pupils and
+        // would become impossible to locate.
         if self.transient.is_none()
             && !self.dragging
             && self.throw.is_none()
             && self.pong.is_none()
             && !self.on_the_run
             && self.search_until == 0
+            && !(self.halloween || now < self.wizard_invisible_until)
         {
             if now.saturating_sub(self.idle_since) >= IDLE_SLEEP_DELAY {
                 if self.base_state != State::Sleep {
