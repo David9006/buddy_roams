@@ -3,6 +3,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::achievements::{
+    Achievements, ACHIEVEMENTS, PARTY_LOVER_STREAK_REQUIRED, SLASHER_CATCHES_REQUIRED,
+    SLASHER_MIN_DOWN_VELOCITY, SLEEP_WAKE_CHANCE_PER_CHECK, SLEEP_WAKE_CHECK_INTERVAL,
+};
 use crate::assets::{asset, Image};
 
 // ---------------------------------------------------------------------------
@@ -1218,6 +1222,17 @@ pub struct Pet {
     // halloween
     pub halloween: bool,
 
+    // achievements
+    pub achievements: Achievements,
+    // Session-transient achievement counters (mirrors the extension).
+    slasher_streak: u32,
+    slasher_streak_wizard: u32,
+    party_streak: u32,
+    sleep_start: u64,
+    next_sleep_wake_check: u64,
+    // Achievement-unlock toast messages drained by the window loop.
+    toasts: Vec<String>,
+
     rng_state: u64,
 }
 
@@ -1280,6 +1295,7 @@ impl Pet {
         april_fools: bool,
         halloween: bool,
         dpi_scale: f64,
+        achievements: Achievements,
     ) -> Self {
         let mut p = Pet {
             left: 0.0,
@@ -1326,6 +1342,13 @@ impl Pet {
             confetti_last: 0,
             prev_cursor: None,
             halloween,
+            achievements,
+            slasher_streak: 0,
+            slasher_streak_wizard: 0,
+            party_streak: 0,
+            sleep_start: 0,
+            next_sleep_wake_check: 0,
+            toasts: Vec::new(),
             rng_state: random_seed(),
         };
         if let Some(x) = cfg.position_x {
@@ -1817,6 +1840,7 @@ impl Pet {
                         self.wake(now);
                         self.transient = Some((State::Dizzy, now + DIZZY_DURATION));
                         self.set_state(State::Dizzy, now);
+                        self.unlock_achievement("dizzy", now);
                     }
                 }
             }
@@ -1873,6 +1897,15 @@ impl Pet {
     pub fn wake(&mut self, now: u64) {
         if self.on_the_run {
             return;
+        }
+        // Accumulate a finished sleep episode toward the Sleeper achievement.
+        if self.base_state == State::Sleep && self.sleep_start != 0 {
+            let ms = now.saturating_sub(self.sleep_start);
+            self.sleep_start = 0;
+            self.next_sleep_wake_check = 0;
+            if self.achievements.note_sleep(ms) {
+                self.unlock_achievement("sleeper", now);
+            }
         }
         self.idle_since = now;
         if self.base_state == State::Sleep {
@@ -1944,6 +1977,18 @@ impl Pet {
             choices[((rest * choices.len() as f64) as usize).min(choices.len() - 1)]
         };
         self.last_click = Some(state);
+        // Party Lover: 4 consecutive yapping/sing/complete clicks.
+        match state {
+            State::Complete | State::Yapping | State::Sing => {
+                self.party_streak += 1;
+                if self.party_streak >= PARTY_LOVER_STREAK_REQUIRED {
+                    self.unlock_achievement("partyLover", now);
+                }
+            }
+            _ => {
+                self.party_streak = 0;
+            }
+        }
         let dur = transient_duration(state);
         self.transient = Some((state, now + dur));
         self.set_state(state, now);
@@ -2016,6 +2061,10 @@ impl Pet {
         let propeller = !propeller_lift
             && self.accessory.as_deref() == Some("propellerHat")
             && vy < 0.0;
+        // Glider: any spinner-hat "bamboo copter" launch unlocks it.
+        if spinner {
+            self.unlock_achievement("glider", now);
+        }
         self.throw = Some(ThrowMotion {
             left: self.left,
             top: self.top,
@@ -2036,6 +2085,8 @@ impl Pet {
         self.bounce_count = 0;
         self.bounce_result_count = 0;
         self.bounce_result_until = 0;
+        self.slasher_streak = 0;
+        self.slasher_streak_wizard = 0;
         self.set_state(State::Falling, now);
     }
 
@@ -2080,7 +2131,25 @@ impl Pet {
                 if self.base_state != State::Sleep {
                     self.base_state = State::Sleep;
                     self.set_state(State::Sleep, now);
+                    self.sleep_start = now;
+                    self.next_sleep_wake_check = now + SLEEP_WAKE_CHECK_INTERVAL;
                 }
+            }
+        }
+        // While asleep, the pet occasionally stirs and wakes on its own
+        // (mirrors the extension's low-probability wake check).
+        if self.base_state == State::Sleep
+            && self.transient.is_none()
+            && !self.dragging
+            && self.throw.is_none()
+            && self.pong.is_none()
+            && !self.on_the_run
+            && self.next_sleep_wake_check != 0
+            && now >= self.next_sleep_wake_check
+        {
+            self.next_sleep_wake_check = now + SLEEP_WAKE_CHECK_INTERVAL;
+            if self.rng() < SLEEP_WAKE_CHANCE_PER_CHECK {
+                self.wake(now);
             }
         }
         // Periodic "thinking" (rendering) episodes with the speech bubble.
@@ -2313,6 +2382,16 @@ impl Pet {
                     // Restart the 4s flight watchdog on each bounce (mirrors the
                     // plugin's `beginBounceImpact` resetting `startTime`).
                     t.start = now;
+                    // Slasher achievements: a fast downward swipe while catching.
+                    if cursor_velocity.1 >= SLASHER_MIN_DOWN_VELOCITY {
+                        self.note_downward_catch(now);
+                    }
+                    // Tamed: a 20-bounce combo while wearing the wizard hat.
+                    if self.bounce_count >= CONFETTI_SCORE
+                        && self.accessory.as_deref() == Some("wizardHat")
+                    {
+                        self.unlock_achievement("tamed", now);
+                    }
                 }
                 t.cursor_contacting = contacting;
             }
@@ -2381,6 +2460,8 @@ impl Pet {
                 self.bounce_result_until = now + BOUNCE_RESULT_DURATION;
             }
             self.bounce_count = 0;
+            self.slasher_streak = 0;
+            self.slasher_streak_wizard = 0;
         } else {
             self.throw = Some(t);
         }
@@ -2503,10 +2584,90 @@ impl Pet {
 
     pub fn set_accessory(&mut self, id: Option<String>, now: u64) {
         self.accessory = id;
+        if let Some(acc) = self.accessory.as_deref() {
+            // Coser: wearing every reward accessory at least once.
+            if self.achievements.note_accessory_equipped(acc) {
+                self.unlock_achievement("coser", now);
+            }
+        }
         self.wizard_invisible_until = 0;
         self.wizard_next_episode = 0;
         self.schedule_wizard_invisibility(now);
     }
+
+    // ---- achievements -----------------------------------------------------
+
+    /// Records one grow/shrink action toward the Breathe achievement (called by
+    /// the window loop on the Grow / Shrink commands).
+    pub fn note_breathe(&mut self, now: u64) {
+        if self.achievements.note_breathe() {
+            self.unlock_achievement("breathe", now);
+        }
+    }
+
+    /// Unlocks an achievement if not already unlocked: applies its reward
+    /// (auto-equip accessory / color), celebrates with confetti, queues a toast,
+    /// then checks Grandmaster.
+    pub fn unlock_achievement(&mut self, id: &str, now: u64) {
+        if self.achievements.is_unlocked(id) {
+            return;
+        }
+        if let Some((name, reward)) = self.achievements.unlock(id) {
+            if let Some(r) = reward {
+                if let Some(acc) = r.accessory {
+                    self.set_accessory(Some(acc.to_string()), now);
+                }
+                if let Some(color) = r.color {
+                    self.set_color(color.to_string());
+                }
+            }
+            let cx = self.left + self.display() / 2.0;
+            let cy = self.top + self.display() / 2.0;
+            self.spawn_confetti(now, cx, cy);
+            self.toasts.push(name.to_string());
+            self.check_grandmaster(now);
+        }
+    }
+
+    fn check_grandmaster(&mut self, now: u64) {
+        if self.achievements.is_unlocked("grandmaster") {
+            return;
+        }
+        for a in ACHIEVEMENTS {
+            if a.id == "grandmaster" {
+                continue;
+            }
+            if !self.achievements.is_unlocked(a.id) {
+                return;
+            }
+        }
+        self.unlock_achievement("grandmaster", now);
+    }
+
+    /// Slasher achievements: 20 downward catches within a single bounce combo
+    /// (not cumulative). Wizard Slasher additionally requires Fruit Slasher.
+    fn note_downward_catch(&mut self, now: u64) {
+        if self.accessory.as_deref() == Some("wizardHat") {
+            if !self.achievements.is_unlocked("fruitSlasher") {
+                return;
+            }
+            self.slasher_streak_wizard += 1;
+            if self.slasher_streak_wizard >= SLASHER_CATCHES_REQUIRED {
+                self.unlock_achievement("wizardSlasher", now);
+            }
+        } else {
+            self.slasher_streak += 1;
+            if self.slasher_streak >= SLASHER_CATCHES_REQUIRED {
+                self.unlock_achievement("fruitSlasher", now);
+            }
+        }
+    }
+
+    /// Drains queued achievement-unlock toasts for the window loop to show.
+    pub fn take_toasts(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.toasts)
+    }
+
 
     pub fn toggle_run(&mut self, now: u64) {
         if self.on_the_run {

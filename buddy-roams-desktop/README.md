@@ -18,6 +18,10 @@ Buddy Roams 桌面版 —— 把 VS Code 的 Buddy 宠物放到你的 Windows �
 - 周期性「思考」（rendering）状态 + 语音气泡；Go on the Run 带搜寻 / 回场动画。
 - 17 顶帽子 + 特殊能力（spinner 竹蜻蜓、propeller 升力、party 点击概率、wizard 隐身 + 瞬移）。
 - 换色（Stable / Insiders / 8 种自定义）、缩放 grow/shrink、Go on the Run。
+- 成就系统（移植自插件版）：Fruit/Wizard Slasher、Tamed、Coser、Dizzy、Technoblade（全局键盘钩子
+  检测输入名言）、Breathe、Glider、Sleeper、Party Lover、Grandmaster。达成后放彩带 + 托盘气泡
+  通知，奖励帽子/颜色自动换装；未解锁的帽子/颜色不出现在右键菜单，进度持久化到
+  `%APPDATA%\BuddyRoams\achievements.json`。
 - 节日：万圣节隐身（只露帽子 + 橙色眼球）、愚人节右向重力 + 左右 pong。
 - 原生右键菜单 + 系统托盘（右键菜单仅 Exit），位置/大小/颜色/饰品持久化到
   `%APPDATA%\BuddyRoams\config.json`。
@@ -134,6 +138,11 @@ desktop pets (Shimeji-style).
 - 17 hats + special abilities (spinner propeller, propeller lift, party click chance, wizard
   invisibility + teleport).
 - Colors (Stable / Insiders / 8 custom), grow/shrink scale, Go on the Run.
+- Achievement system (ported from the extension): Fruit/Wizard Slasher, Tamed, Coser, Dizzy,
+  Technoblade (global keyboard hook detects the quote), Breathe, Glider, Sleeper, Party Lover,
+  Grandmaster. Unlocking fires confetti + a tray balloon, auto-equips the hat/color reward; locked
+  hats/colors stay out of the right-click menu, and progress persists to
+  `%APPDATA%\BuddyRoams\achievements.json`.
 - Festivals: Halloween invisibility (hat + orange eyes), April Fools' rightward gravity + horizontal
   pong.
 - Native right-click menu + system tray (right-click menu with only **Exit**); position/size/color/accessory persist

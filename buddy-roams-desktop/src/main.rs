@@ -6,14 +6,16 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod achievements;
 mod assets;
 mod engine;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use achievements::Achievements;
 use engine::{Config, Pet};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
@@ -28,7 +30,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_NOREPEAT, VK_OEM_MINUS, VK_OEM_PLUS,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -99,6 +102,43 @@ thread_local! {
     static APP: RefCell<Option<App>> = RefCell::new(None);
 }
 
+// Global low-level keyboard hook state for the Technoblade achievement: it
+// matches the lowercase letter sequence "technobladeneverdies" typed anywhere
+// on the system, then flags the window loop to unlock the achievement.
+const TECHNO_QUOTE: &str = "technobladeneverdies";
+
+thread_local! {
+    static TECHNO_BUFFER: RefCell<String> = const { RefCell::new(String::new()) };
+    static TECHNO_TRIGGERED: Cell<bool> = const { Cell::new(false) };
+}
+
+unsafe extern "system" fn low_level_keyboard_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code >= 0 && wparam.0 == WM_KEYDOWN as usize {
+        let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+        let vk = kb.vkCode;
+        if (0x41..=0x5A).contains(&vk) {
+            let ch = (vk as u8 as char).to_ascii_lowercase();
+            TECHNO_BUFFER.with(|cell| {
+                let mut buf = cell.borrow_mut();
+                buf.push(ch);
+                let keep = TECHNO_QUOTE.len();
+                if buf.len() > keep {
+                    let drain = buf.len() - keep;
+                    buf.drain(..drain);
+                }
+                if buf.as_str() == TECHNO_QUOTE {
+                    TECHNO_TRIGGERED.with(|t| t.set(true));
+                }
+            });
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -133,6 +173,11 @@ fn utc_date() -> (i64, u32, u32) {
 fn config_path() -> PathBuf {
     let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(base).join("BuddyRoams").join("config.json")
+}
+
+fn achievements_path() -> PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(base).join("BuddyRoams").join("achievements.json")
 }
 
 fn load_config() -> Config {
@@ -258,10 +303,12 @@ unsafe fn append_submenu(menu: HMENU, sub: HMENU, label: &str) {
 unsafe fn build_pet_menu(app: &App) -> HMENU {
     let menu = CreatePopupMenu().unwrap();
 
-    // Accessories submenu.
+    // Accessories submenu: only earned (unlocked) accessories, plus "None".
+    let unlocked_accs = app.pet.achievements.unlocked_accessories();
     let acc_menu = CreatePopupMenu().unwrap();
     append(acc_menu, if app.pet.accessory.is_none() { MF_STRING | MF_CHECKED } else { MF_STRING }, ID_ACC_BASE, "None");
     for (i, (id, label)) in ACCESSORIES.iter().enumerate() {
+        if !unlocked_accs.contains(id) { continue; }
         let flags = if app.pet.accessory.as_deref() == Some(id) {
             MF_STRING | MF_CHECKED
         } else {
@@ -271,9 +318,11 @@ unsafe fn build_pet_menu(app: &App) -> HMENU {
     }
     append_submenu(menu, acc_menu, "Accessories");
 
-    // Colors submenu.
+    // Colors submenu: only earned (unlocked) colors.
+    let unlocked_colors = app.pet.achievements.unlocked_colors();
     let color_menu = CreatePopupMenu().unwrap();
     for (i, (id, label)) in COLORS.iter().enumerate() {
+        if !unlocked_colors.contains(id) { continue; }
         let flags = if app.pet.color == *id {
             MF_STRING | MF_CHECKED
         } else {
@@ -332,6 +381,29 @@ unsafe fn remove_tray(icon: HICON) {
         ..Default::default()
     };
     let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+}
+
+/// Pops a tray balloon notification (achievement unlock toast).
+unsafe fn show_toast(hwnd: HWND, title: &str, text: &str) {
+    let mut info_title = [0u16; 64];
+    for (i, c) in title.encode_utf16().take(63).enumerate() {
+        info_title[i] = c;
+    }
+    let mut info = [0u16; 256];
+    for (i, c) in text.encode_utf16().take(255).enumerate() {
+        info[i] = c;
+    }
+    let data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        uFlags: NIF_INFO,
+        szInfo: info,
+        szInfoTitle: info_title,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
 }
 
 // ---------------------------------------------------------------------------
@@ -532,10 +604,12 @@ unsafe fn handle_command(hwnd: HWND, id: usize) {
             }
             ID_GROW => {
                 a.pet.set_scale(a.pet.scale + 0.2);
+                a.pet.note_breathe(now_ms());
                 save_config(a);
             }
             ID_SHRINK => {
                 a.pet.set_scale(a.pet.scale - 0.2);
+                a.pet.note_breathe(now_ms());
                 save_config(a);
             }
             ID_RESET_SIZE => {
@@ -549,16 +623,22 @@ unsafe fn handle_command(hwnd: HWND, id: usize) {
                 save_config(a);
             }
             id if (ID_COLOR_BASE..ID_COLOR_BASE + COLORS.len()).contains(&id) => {
-                a.pet.set_color(COLORS[id - ID_COLOR_BASE].0.to_string());
-                save_config(a);
+                let color = COLORS[id - ID_COLOR_BASE].0;
+                if a.pet.achievements.unlocked_colors().iter().any(|c| *c == color) {
+                    a.pet.set_color(color.to_string());
+                    save_config(a);
+                }
             }
             ID_ACC_BASE => {
                 a.pet.set_accessory(None, now_ms());
                 save_config(a);
             }
             id if (ID_ACC_BASE + 1..ID_ACC_BASE + 1 + ACCESSORIES.len()).contains(&id) => {
-                a.pet.set_accessory(Some(ACCESSORIES[id - ID_ACC_BASE - 1].0.to_string()), now_ms());
-                save_config(a);
+                let acc = ACCESSORIES[id - ID_ACC_BASE - 1].0;
+                if a.pet.achievements.unlocked_accessories().iter().any(|c| *c == acc) {
+                    a.pet.set_accessory(Some(acc.to_string()), now_ms());
+                    save_config(a);
+                }
             }
             _ => {}
         }
@@ -581,6 +661,17 @@ unsafe fn tick_and_render(a: &mut App) {
     let cursor_velocity = sample_velocity(&a.cursor_samples);
 
     a.pet.tick(now, cursor, cursor_velocity);
+
+    // Technoblade achievement: flagged by the low-level keyboard hook.
+    let techno = TECHNO_TRIGGERED.with(|t| t.replace(false));
+    if techno {
+        a.pet.unlock_achievement("technoblade", now);
+    }
+    // Achievement unlock toasts → tray balloons.
+    for name in a.pet.take_toasts() {
+        show_toast(hwnd, "Buddy Roams", &format!("Achievement unlocked: {name}"));
+    }
+
     let frame = a.pet.render(now, cursor);
 
     if let Some((img, x, y)) = frame {
@@ -634,6 +725,7 @@ fn main() {
         .unwrap();
 
         let config = load_config();
+        let achievements = Achievements::load(achievements_path());
         let pet = Pet::new(
             screen_h,
             screen_w,
@@ -641,6 +733,7 @@ fn main() {
             is_april_fools(),
             is_halloween(),
             dpi_scale,
+            achievements,
         );
 
         APP.with(|cell| {
@@ -673,6 +766,10 @@ fn main() {
             VK_OEM_MINUS.0 as u32,
         );
 
+        // Global keyboard hook for the Technoblade achievement: match the quote
+        // typed anywhere on the system.
+        let kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), hmod, 0).ok();
+
         let mut msg = MSG::default();
         loop {
             let r = GetMessageW(&mut msg, None, 0, 0);
@@ -686,6 +783,9 @@ fn main() {
         let _ = KillTimer(hwnd, TIMER_ID);
         let _ = UnregisterHotKey(hwnd, HOTKEY_GROW);
         let _ = UnregisterHotKey(hwnd, HOTKEY_SHRINK);
+        if let Some(hook) = kb_hook {
+            let _ = UnhookWindowsHookEx(hook);
+        }
         remove_tray(icon);
     }
 }
